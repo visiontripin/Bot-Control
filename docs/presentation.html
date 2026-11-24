@@ -116,8 +116,8 @@
   .final .card .ic{font-size:22px}
   .final .card b{display:block;font-size:21px;margin:12px 0 6px}
   .final .card span{color:#C9D3DD;font-size:16px;line-height:1.4;display:block}
-  .final-note{margin-top:26px;color:var(--muted);font-size:17px}
-  .final-note code{background:var(--bubble);padding:2px 8px;border-radius:6px;color:#DDE5EC}
+  .final-note{margin-top:26px;color:var(--muted);font-size:15.5px;line-height:1.5}
+  .final-note code{background:var(--bubble);padding:2px 8px;border-radius:6px;color:#DDE5EC;white-space:nowrap}
 
   /* ---------- экранный режим ---------- */
   .toolbar{position:fixed;inset:auto 0 0 0;height:60px;display:flex;align-items:center;gap:14px;
@@ -165,14 +165,14 @@
     </div>
     <div class="cover">
       <div>
-        <span class="badge"><i></i> Android · открытый проект · без сервера</span>
+        <span class="badge"><i></i> Android 1.7.3 + Windows · открытый проект · без сервера</span>
         <h1>Telegram-бот,<br>который живёт<br><em>в вашем телефоне</em></h1>
         <p class="lead" style="margin-top:20px">Ни VPS, ни Termux, ни ежемесячных платежей.
           Команды, кнопки, анимации, расписание, объявления и ИИ — в одном приложении.</p>
         <div class="cta">
-          <a class="btn amber" href="https://github.com/visiontripin/oracle/releases/latest">⬇️ Скачать APK</a>
+          <a class="btn amber" href="https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk">⬇️ Скачать APK</a>
           <a class="btn" href="https://t.me/AppBotcontrol_bot">🤖 Демо-бот</a>
-          <a class="btn ghost" href="https://github.com/visiontripin/oracle">⭐ GitHub</a>
+          <a class="btn ghost" href="https://github.com/visiontripin/Bot-Control">⭐ GitHub</a>
         </div>
       </div>
       <div class="cover-right">
@@ -180,7 +180,7 @@
         <div class="tag">Бот запускается кнопкой «▶ Запустить» и работает, пока телефон с вами.</div>
       </div>
     </div>
-    <div class="foot">github.com/visiontripin/oracle · t.me/AppBotcontrol_bot</div>
+    <div class="foot">github.com/visiontripin/Bot-Control · t.me/AppBotcontrol_bot</div>
   </section>
 
   <!-- 2. ПРОБЛЕМА -->
@@ -251,7 +251,7 @@
           <li>Ноль платежей за хостинг: приложение бесплатное и открытое.</li>
           <li>Настройка кнопками: команда, фраза или кнопка → ответ, набор, анимация или ИИ.</li>
           <li>Сколько угодно ботов на разных токенах, у каждого свои правила и характер.</li>
-          <li>Работает в фоне как обычное приложение: Android 14+ без Termux и root.</li>
+          <li>Работает в фоне как обычное приложение (Android 14+, автозапуск после перезагрузки) + веб-редактор <code>BotControl.exe</code> для ПК.</li>
         </ul>
       </div>
     </div>
@@ -272,7 +272,7 @@
         <ul>
           <li>Команда, фраза или нажатие кнопки → текст, набор фраз, анимация, расписание или ИИ.</li>
           <li>Inline-кнопки по рядам, до 12 под сообщением, кнопки-ссылки.</li>
-          <li>Постоянная клавиатура под полем ввода и меню команд Telegram.</li>
+          <li>Клавиатура чата, действия кнопок и меню команд Telegram — в одном конструкторе.</li>
           <li>Всё добавляется диалогами в приложении — писать код не обязательно.</li>
         </ul>
       </div>
@@ -403,9 +403,9 @@
     <div class="steps">
       <div class="step">
         <div class="n">1</div>
-        <h3>Скачайте APK</h3>
-        <p>Приложение весит как обычная игра и ставится в один тап.
-          Все обновления — с той же страницы релизов.</p>
+        <h3>Скачайте APK или .exe</h3>
+        <p>Прямая ссылка <code>BotControl-debug.apk</code> для Android (и <code>BotControl.exe</code> для Windows на странице релизов).
+          Ставится в один тап.</p>
       </div>
       <div class="step">
         <div class="n">2</div>
@@ -478,17 +478,17 @@
     <h2>Ваш бот уже может жить в телефоне</h2>
     <div class="bar"></div>
     <div class="final">
-      <a class="card" href="https://github.com/visiontripin/oracle/releases/latest">
+      <a class="card" href="https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk">
         <div class="ic">⬇️</div>
         <b>Скачать APK</b>
-        <span>Страница релизов: свежий BotControl для Android. Установка в один тап.</span>
+        <span>Прямая ссылка на свежий BotControl для Android (v1.7.3). Установка в один тап.</span>
       </a>
       <a class="card" href="https://t.me/AppBotcontrol_bot">
         <div class="ic">🤖</div>
         <b>Демо-бот</b>
         <span>@AppBotcontrol_bot — потрогать кнопки, слайды и анимации прямо в Telegram.</span>
       </a>
-      <a class="card" href="https://github.com/visiontripin/oracle">
+      <a class="card" href="https://github.com/visiontripin/Bot-Control">
         <div class="ic">⭐</div>
         <b>GitHub</b>
         <span>Исходный код, конфиги ботов и инструкции. Поставьте звезду проекту.</span>
@@ -497,7 +497,8 @@
     <div class="final-note">
       Презентация файлом: <a href="presentation.pdf">presentation.pdf</a> ·
       страница проекта: <a href="index.html">index.html</a> ·
-      инструкция по коду бота: <code>Инструкция-код-бота.md</code>
+      для Windows: <a href="https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.6.0/BotControl.exe">BotControl.exe</a> ·
+      код бота: <code>Инструкция-код-бота.md</code>
     </div>
     <div class="foot">BotControl · открытый проект · Telegram-боты без сервера</div>
   </section>
@@ -512,7 +513,8 @@
   <span class="sp"></span>
   <a href="presentation.pdf">📄 PDF</a>
   <a href="index.html">🌐 Страница проекта</a>
-  <a href="https://github.com/visiontripin/oracle/releases/latest">⬇️ APK</a>
+  <a href="https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk">⬇️ APK</a>
+  <a href="https://github.com/visiontripin/Bot-Control/releases">📦 Релизы</a>
 </div>
 
 <script>
@@ -547,6 +549,10 @@
   window.addEventListener('resize', fit);
   window.addEventListener('beforeprint', function () { stage.style.transform = 'none'; });
   window.addEventListener('afterprint', fit);
+  window.addEventListener('hashchange', function () {
+    var h = parseInt((location.hash || '').slice(1), 10);
+    if (!isNaN(h)) show(h - 1);
+  });
   var start = parseInt((location.hash || '').slice(1), 10);
   show(isNaN(start) ? 0 : start - 1);
   fit();

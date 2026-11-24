@@ -15,9 +15,10 @@ tg-bot-control/
 │       ├── service/         # LocalBotService, BotBrain, AnimPlayer, ListingEngine, FileServer
 │       ├── llm/             # MediaPipe / LiteRT движки, ModelStore
 │       └── ui/              # экраны, компоненты, тема (палитра Telegram)
+├── desktop-web/             # локальный веб-редактор и сборка для Windows (BotControl.exe) и Termux
 ├── scripts/                 # build_apk.sh, build_in_sandbox.sh
 ├── branding/                # logo.svg, avatar-640.png, slides/, генераторы ассетов
-├── tools/                   # kotlin-harness, import-fixtures, check-bot-isolation.py
+├── tools/                   # kotlin-harness, import-fixtures, check-bot-isolation.py, check-no-tokens.py
 ├── smith-bot-ready.py       # «Агент Смит / перекур»: ИИ-характер, шутки, анимация, расписание
 ├── daromvpl-channel-ready.py# канал «Даром в ПЛ»: команды, правила, дайджесты, реакции
 ├── presentation-bot-ready.py# бот-презентация @AppBotcontrol_bot
@@ -51,14 +52,17 @@ APK собирается в GitHub Actions (`.github/workflows/botcontrol-apk.ym
 ## Тесты и проверки
 
 ```bash
+python3 tools/check-no-tokens.py         # секреты и токены не попали в git (шаг CI)
 python3 tools/check-bot-isolation.py     # сервис не читает настройки без botId (шаг CI)
-cd tools/kotlin-harness && ./isolation.sh # изоляция наборов в экспорте
+cd desktop-web && python3 -m unittest test_server -v && node test-generated.js
+cd ../tools/kotlin-harness && ./isolation.sh # изоляция наборов в экспорте
 ```
 
 Прогон импортёра на фикстурах — `tools/kotlin-harness/README.md`.
 
 ## Ссылки
 
-- Презентация: [docs/presentation.html](../docs/presentation.html) · [PDF](../docs/presentation.pdf)
-- Релизы и APK: <https://github.com/visiontripin/oracle/releases>
+- Сайт и презентация: <https://visiontripin.github.io/Bot-Control/> · [слайды](../docs/presentation.html) · [PDF](../docs/presentation.pdf)
+- Скачать свежий APK напрямую: <https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk>
+- Все релизы (APK + Windows `.exe`): <https://github.com/visiontripin/Bot-Control/releases>
 - Демо-бот: <https://t.me/AppBotcontrol_bot>

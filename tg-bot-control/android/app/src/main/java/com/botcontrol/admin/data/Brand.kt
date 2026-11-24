@@ -7,9 +7,10 @@ package com.botcontrol.admin.data
  * (branding/make_android_icons.py).
  */
 object Brand {
-    const val GITHUB_URL = "https://github.com/visiontripin/oracle"
-    /** Релизы — пререлизы, поэтому /releases/latest не работает: даём список. */
-    const val RELEASES_URL = "https://github.com/visiontripin/oracle/releases"
+    const val GITHUB_URL = "https://github.com/visiontripin/Bot-Control"
+    const val RELEASES_URL = "https://github.com/visiontripin/Bot-Control/releases"
+    const val LATEST_APK_URL = "https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk"
+    const val PAGES_URL = "https://visiontripin.github.io/Bot-Control/"
     const val DEMO_BOT = "AppBotcontrol_bot"
     const val DEMO_BOT_URL = "https://t.me/AppBotcontrol_bot"
 

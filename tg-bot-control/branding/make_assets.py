@@ -115,7 +115,7 @@ def phone(items, x=790, y=110, w=410, h=520, title="BotControl Demo"):
     return "\n".join(out)
 
 
-def slide(n, total, title_lines, bullets, chat, footer="github.com/visiontripin/oracle"):
+def slide(n, total, title_lines, bullets, chat, footer="github.com/visiontripin/Bot-Control"):
     W, H = 1280, 720
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}">',
              '<defs><radialGradient id="glow" cx="0.78" cy="0.45" r="0.6">'
@@ -159,7 +159,7 @@ SLIDES = [
      ["Команда, фраза или кнопка → ответ",
       "Текст, набор фраз, скрипт JS или ИИ",
       ["Inline-кнопки: всплывашки, ссылки,", "правка сообщения на месте"],
-      "Клавиатура чата и меню команд"],
+      "Клавиатура и действия в одном месте"],
      [("out", "/start"),
       ("in", ["Привет, Нео!", "Нажми «Запуск», чтобы включить", "напоминания."]),
       ("btns", [["▶ Запуск", "■ Стоп"]]),
@@ -212,7 +212,7 @@ SLIDES = [
       ("in", "✓ Опубликовано в канале"),
       ("btns", [["Поднять", "Удалить"]])]),
     ("08-start", ["Как начать"],
-     ["1. Скачай APK с GitHub (Релизы)",
+     ["1. Скачай APK или BotControl.exe",
       "2. @BotFather → /newbot → токен",
       "3. Приложение → «+ Добавить бота»",
       "4. Правила, импорт кода или промт",

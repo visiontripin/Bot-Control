@@ -1,7 +1,7 @@
 BotControl — ТРЕБОВАНИЯ ПОЛЬЗОВАТЕЛЯ (соблюдать СТРОГО, в каждой итерации)
 ==========================================================================
 Источник: tg-bot-control/ПЕРЕДАЧА-КОНТЕКСТА.md, раздел 7, и прямые указания пользователя в чатах.
-Ссылка: https://github.com/visiontripin/oracle/blob/main/tg-bot-control/ПЕРЕДАЧА-КОНТЕКСТА.md
+Ссылка: https://github.com/visiontripin/Bot-Control/blob/main/tg-bot-control/ПЕРЕДАЧА-КОНТЕКСТА.md
 
 1. ДИЗАЙН
    • Строгая палитра Telegram:
@@ -60,10 +60,12 @@ BotControl — ТРЕБОВАНИЯ ПОЛЬЗОВАТЕЛЯ (соблюдать
      2ecc9b73dd43d0b40cd032c3e83d2e7f4a549680d513a10b7ed5510e51e20d5e).
    • Понятная сводка на русском.
    • ВСЕ файлы, которые пользователю нужно скачать, даются ПРЯМЫМИ ССЫЛКАМИ:
-       https://github.com/visiontripin/oracle/releases/download/<тег>/<файл>
+       https://github.com/visiontripin/Bot-Control/releases/download/<тег>/<файл>
+       (и постоянная ссылка на свежий APK:
+       https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk)
      Тег имеет вид botcontrol-v<versionName>-code<versionCode>. К релизу
      автоматически прикладываются APK, все tg-bot-control/*-ready.py,
-     branding/avatar-640.png и handoff/*.txt.
+     branding/avatar-640.png, docs/presentation.{html,pdf} и handoff/*.txt.
    • Обнови RELEASE-NOTES.md (новая версия сверху), раздел 2 и 9 в
      ПЕРЕДАЧА-КОНТЕКСТА.md и строку «Текущая доставка» в корневом README.md.
 

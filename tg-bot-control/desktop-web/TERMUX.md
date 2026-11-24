@@ -10,13 +10,13 @@
    ```sh
    pkg update && pkg upgrade
    pkg install python git
-   git clone https://github.com/visiontripin/oracle.git
-   cd oracle/tg-bot-control/desktop-web
+   git clone https://github.com/visiontripin/Bot-Control.git
+   cd Bot-Control/tg-bot-control/desktop-web
    ```
 
-   До включения изменений в `main` используйте вместо команды клонирования: `git clone --branch arena/923bbc26-oracle https://github.com/visiontripin/oracle.git`. Для обновления существующей копии: `cd ~/oracle && git pull --ff-only`.
+   Для обновления существующей копии: `cd ~/Bot-Control && git pull --ff-only`.
 3. Узнайте IPv4-адрес телефона в настройках текущей сети Wi‑Fi, например `192.168.1.25`. Используйте **свой** адрес; он может измениться при переподключении. Подключите компьютер к той же сети.
-4. В папке `~/oracle/tg-bot-control/desktop-web` запустите, подставив адрес телефона:
+4. В папке `~/Bot-Control/tg-bot-control/desktop-web` запустите, подставив адрес телефона:
 
    ```sh
    python server.py --host 192.168.1.25 --no-browser

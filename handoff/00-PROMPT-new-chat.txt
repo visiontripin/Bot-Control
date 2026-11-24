@@ -2,29 +2,32 @@
 ==========================================================================================
 
 Продолжаем проект BotControl: Android-приложение на Kotlin и Jetpack Compose
-(пакет com.botcontrol.admin). Оно превращает телефон в хост локальных
-Telegram-ботов: long polling Bot API, несколько ботов на разных токенах,
-правила и кнопки, анимации правкой сообщения, фото-анимации, расписание и
-посты в канал, режим «Объявления», импорт и экспорт конфигов ботов «кодом»
-(python-подобный текст, который НЕ исполняется), LLM строго на устройстве.
+(пакет com.botcontrol.admin) + локальный веб-редактор и сборка для Windows
+(tg-bot-control/desktop-web → BotControl.exe). Android-приложение превращает
+телефон в хост локальных Telegram-ботов: long polling Bot API, несколько ботов
+на разных токенах, правила и конструктор клавиатуры/кнопок, анимации правкой
+сообщения, фото-анимации, расписание и посты в канал, режим «Объявления»,
+импорт и экспорт конфигов ботов «кодом» (python-подобный текст, который НЕ
+исполняется), автозапуск после перезагрузки, LLM строго на устройстве.
 
 ИСТОЧНИК ИСТИНЫ — GIT. Весь проект лежит в репозитории:
-  Репозиторий:        https://github.com/visiontripin/oracle
-  Рабочая ветка:      https://github.com/visiontripin/oracle/tree/main
-  PR в main:          https://github.com/visiontripin/oracle/pull/1  (если уже влит — бери main)
-  Релизы (APK):       https://github.com/visiontripin/oracle/releases
-  Последний релиз:    https://github.com/visiontripin/oracle/releases/tag/botcontrol-v1.7.0-code33
-  CI (Actions):       https://github.com/visiontripin/oracle/actions
-  Память проекта:     https://github.com/visiontripin/oracle/blob/main/tg-bot-control/ПЕРЕДАЧА-КОНТЕКСТА.md
-  Инструкции (txt):   https://github.com/visiontripin/oracle/tree/main/handoff
+  Репозиторий:        https://github.com/visiontripin/Bot-Control
+  Рабочая ветка:      https://github.com/visiontripin/Bot-Control/tree/main
+  Скачать APK:        https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk
+  Все релизы:         https://github.com/visiontripin/Bot-Control/releases
+  Последний релиз:    https://github.com/visiontripin/Bot-Control/releases/tag/botcontrol-v1.7.3-code36
+  Windows (0.6.0):    https://github.com/visiontripin/Bot-Control/releases/tag/botcontrol-windows-preview-0.6.0
+  Сайт и слайды:      https://visiontripin.github.io/Bot-Control/
+  CI (Actions):       https://github.com/visiontripin/Bot-Control/actions
+  Память проекта:     https://github.com/visiontripin/Bot-Control/blob/main/tg-bot-control/ПЕРЕДАЧА-КОНТЕКСТА.md
+  Инструкции (txt):   https://github.com/visiontripin/Bot-Control/tree/main/handoff
 
 ПЕРВЫЕ ДЕЙСТВИЯ (по порядку):
 1. Подтяни проект в свою ветку сессии (у нового чата будет своя ветка arena/…):
-     git fetch origin main main
+     git fetch origin main
      git merge --ff-only FETCH_HEAD   # или: git reset --hard origin/main,
                                       # если в твоей ветке только «Initial commit»
-   Если PR #1 уже влит, достаточно origin/main.
-   Проверь: git log --oneline -3 (последние коммиты — «docs: v1.7.0 доставлен» или новее).
+   Проверь: git log --oneline -3.
    Удобная ссылка: ln -sfn "$PWD/tg-bot-control" /home/user/tg-bot-control
 2. Прочитай ЦЕЛИКОМ:
      handoff/01-project-rules.txt     — мои строгие требования (соблюдать всегда)
@@ -37,34 +40,34 @@ Telegram-ботов: long polling Bot API, несколько ботов на р
    стоит branches: ["arena/**", "main"]. Сборка APK запускается пушем в ветку,
    тег и релиз создаются, когда в сообщении коммита есть [apk].
 
-ТЕКУЩЕЕ СОСТОЯНИЕ: v1.7.0 (versionCode 33), тег botcontrol-v1.7.0-code33.
-  APK:  https://github.com/visiontripin/oracle/releases/download/botcontrol-v1.7.0-code33/BotControl-debug.apk
+ТЕКУЩЕЕ СОСТОЯНИЕ: Android v1.7.3 (versionCode 36), тег botcontrol-v1.7.3-code36,
+и Windows BotControl.exe 0.6.0 (тег botcontrol-windows-preview-0.6.0).
+  APK:  https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk
+  EXE:  https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.6.0/BotControl.exe
   Сертификат подписи (не должен меняться):
   2ecc9b73dd43d0b40cd032c3e83d2e7f4a549680d513a10b7ed5510e51e20d5e
-  СЛЕДУЮЩАЯ СБОРКА: versionCode 34 (versionName 1.7.1 или 1.8.0 для крупной фичи).
+  СЛЕДУЮЩАЯ СБОРКА ANDROID: versionCode 37 (versionName 1.7.4 или 1.8.0 для крупной фичи).
 
-ПОСЛЕДНЕЕ, ЧТО ДЕЛАЛИ (v1.6.3–v1.7.0): изоляция ботов. Уточняющие вопросы,
-запасной ответ и кулдаун одного бота звучали во всех, потому что в
-LocalBotStore botId = -1 означает «активный в UI бот». Теперь в service/ и
-data/ botId передаётся явно, это проверяет CI-скрипт
-tg-bot-control/tools/check-bot-isolation.py. Ещё добавлены: владелец у наборов
-ответов, метка [@бот] в журнале, подтверждение всех удалений, параметры ИИ
-своего бота на каждый запрос, версия в строке «🚀 Бот запущен».
-ВАЖНО: если я пришлю лог без меток [@бот] и без «· BotControl vX» в строке
-запуска, значит, он снят на старой сборке (≤ v1.6.2). Сначала скажи мне
-об этом, не ищи заново уже исправленную ошибку.
+ЧТО УЖЕ СДЕЛАНО (v1.6.3–v1.7.3 + desktop-web 0.6.0):
+  • изоляция ботов + CI-проверки check-bot-isolation.py и check-no-tokens.py;
+  • скрыта серверная обвязка в основном Android-потоке, единый конструктор кнопок;
+  • автозапуск ботов после перезагрузки, кнопка исключения из оптимизации батареи;
+  • поиск/фильтр/экспорт журнала; честное отображение параметров LiteRT-LM;
+  • desktop-web / BotControl.exe 0.6.0 с исправлениями W1–W8, U-W4–U-W6;
+  • репозиторий, ссылки, презентация (HTML/PDF), сайт и релизная лента сведены в main.
 
-ЖДУТ ОТ МЕНЯ (напомни, если ещё не сделано):
-  • отозвать токен бота 8709443116 в @BotFather (/revoke): он остался в истории git;
-  • включить GitHub Pages: Settings → Pages → main, папка /docs.
+ЖДУТ ОТ ВЛАДЕЛЬЦА (напомни, если ещё не сделано):
+  • отозвать старый токен бота 8709443116 в @BotFather (/revoke): он остался в истории git.
 
 ПРАВИЛА ДОСТАВКИ:
   • каждая задача заканчивается готовым APK со следующим versionCode, проверкой
     aapt и сертификата и понятной сводкой НА РУССКОМ;
-  • презентация проекта — docs/presentation.html (+ PDF): держать в актуальном
-    состоянии при изменении возможностей;
+  • презентация проекта — docs/presentation.html (+ PDF) и сайт docs/index.html:
+    держать в актуальном состоянии при изменении возможностей;
   • все файлы, которые мне нужно скачать (APK, *.py, txt), даются ПРЯМЫМИ ССЫЛКАМИ:
-    https://github.com/visiontripin/oracle/releases/download/<тег>/<файл>
+    https://github.com/visiontripin/Bot-Control/releases/download/<тег>/<файл>
+    (плюс постоянная ссылка на свежий APK:
+    https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk)
   • никогда не коммить живые токены ботов (в git можно только debug.keystore).
 
 Моя новая задача: [ОПИШИ ЗАДАЧУ]
@@ -72,6 +75,6 @@ tg-bot-control/tools/check-bot-isolation.py. Ещё добавлены: влад
 
 ------------------------------------------------------------------------------------------
 КОРОТКИЙ ВАРИАНТ (если контекст уже передан):
-Проект BotControl, git: https://github.com/visiontripin/oracle (ветка main
-или main). Подтяни его, прочитай handoff/*.txt и tg-bot-control/ПЕРЕДАЧА-КОНТЕКСТА.md,
-продолжаем с v1.7.0 (следующий versionCode 34). Задача: [ОПИШИ ЗАДАЧУ]
+Проект BotControl, git: https://github.com/visiontripin/Bot-Control (ветка main).
+Подтяни его, прочитай handoff/*.txt и tg-bot-control/ПЕРЕДАЧА-КОНТЕКСТА.md,
+продолжаем с v1.7.3 (следующий versionCode 37). Задача: [ОПИШИ ЗАДАЧУ]
