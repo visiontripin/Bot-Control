@@ -286,86 +286,91 @@ class LocalBotService : Service() {
 
         coroutineScope {
             val botScope = this
-            launch { schedulerLoop(botId, store, api) }
-
-            while (isActive && states.value[botId]?.running == true) {
-                try {
-                    val timeoutSec = if (backlogDropped) 25 else 0
-                    val (messages, callbacks, nextOffset) = api.getUpdates(offset, timeoutSec)
-                    offset = nextOffset
-                    pollRateLimitStreak = 0
-                    setState(botId) {
-                        it.copy(
-                            lastPollAt = System.currentTimeMillis() / 1000, lastError = "",
-                        )
-                    }
-                    resolveProblem(botId, "network")
-                    resolveProblem(botId, "conflict")
-                    if (!backlogDropped) {
-                        // Confirm any backlog silently: no reply spam to messages sent before start.
-                        backlogPages++
-                        if (messages.size + callbacks.size < 100 || backlogPages >= 5) {
-                            backlogDropped = true
+            val schedJob = launch { schedulerLoop(botId, store, api) }
+            try {
+                while (isActive && states.value[botId]?.running == true) {
+                    try {
+                        val timeoutSec = if (backlogDropped) 25 else 0
+                        val (messages, callbacks, nextOffset) = api.getUpdates(offset, timeoutSec)
+                        offset = nextOffset
+                        pollRateLimitStreak = 0
+                        setState(botId) {
+                            it.copy(
+                                lastPollAt = System.currentTimeMillis() / 1000, lastError = "",
+                            )
                         }
-                        continue
-                    }
-                    messages.forEach { msg ->
-                        handle(app, store, api, botId, msg, botScope)
-                        setState(botId) { it.copy(processed = it.processed + 1) }
-                    }
-                    callbacks.forEach { cb ->
-                        handleCallback(app, store, api, botId, cb, botScope)
-                        setState(botId) { it.copy(processed = it.processed + 1) }
-                    }
-                    refreshNotification()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    val apiErr = e as? TelegramApiException
-                    val msg = e.message.orEmpty()
-                    when {
-                        apiErr?.isAuthError == true -> {
-                            addProblem(botId, "token", msg)
-                            setState(botId) { it.copy(running = false, lastError = msg) }
-                            return@coroutineScope
+                        resolveProblem(botId, "network")
+                        resolveProblem(botId, "conflict")
+                        if (!backlogDropped) {
+                            // Confirm any backlog silently: no reply spam to messages sent before start.
+                            backlogPages++
+                            if (messages.size + callbacks.size < 100 || backlogPages >= 5) {
+                                backlogDropped = true
+                            }
+                            continue
                         }
-                        !webhookCleared && msg.contains("webhook", true) -> {
-                            webhookCleared = true
-                            BotLog.log(botId, "🔧 Активен webhook — снимаю через deleteWebhook")
-                            api.deleteWebhook().onFailure { wErr ->
-                                val wApi = wErr as? TelegramApiException
-                                if (wApi?.isRateLimit == true) {
-                                    val waitSec = TelegramRateLimit.backoffSec(wApi.retryAfterSec, 1, minSec = 15L, maxSec = 300L)
-                                    delay(waitSec * 1000L)
+                        messages.forEach { msg ->
+                            handle(app, store, api, botId, msg, botScope)
+                            setState(botId) { it.copy(processed = it.processed + 1) }
+                        }
+                        callbacks.forEach { cb ->
+                            handleCallback(app, store, api, botId, cb, botScope)
+                            setState(botId) { it.copy(processed = it.processed + 1) }
+                        }
+                        refreshNotification()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        val apiErr = e as? TelegramApiException
+                        val msg = e.message.orEmpty()
+                        when {
+                            apiErr?.isAuthError == true -> {
+                                addProblem(botId, "token", msg)
+                                setState(botId) { it.copy(running = false, lastError = msg) }
+                                return@coroutineScope
+                            }
+                            !webhookCleared && msg.contains("webhook", true) -> {
+                                webhookCleared = true
+                                BotLog.log(botId, "🔧 Активен webhook — снимаю через deleteWebhook")
+                                api.deleteWebhook().onFailure { wErr ->
+                                    val wApi = wErr as? TelegramApiException
+                                    if (wApi?.isRateLimit == true) {
+                                        val waitSec = TelegramRateLimit.backoffSec(wApi.retryAfterSec, 1, minSec = 15L, maxSec = 300L)
+                                        delay(waitSec * 1000L)
+                                    } else {
+                                        delay(POLL_ERROR_MS)
+                                    }
                                 }
                             }
-                        }
-                        apiErr?.isRateLimit == true || msg.contains("HTTP 429") -> {
-                            pollRateLimitStreak++
-                            val retrySec = apiErr?.retryAfterSec ?: TelegramRateLimit.parseRetryAfterSec(msg)
-                            val waitSec = TelegramRateLimit.backoffSec(retrySec, pollRateLimitStreak, minSec = 15L, maxSec = 300L)
-                            val reason2 = "Telegram ограничил запросы (HTTP 429) — ждём $waitSec с"
-                            setState(botId) { it.copy(lastError = reason2) }
-                            addProblem(botId, "network", reason2)
-                            BotLog.log(botId, "⏳ HTTP 429 на getUpdates: ждём $waitSec с" +
-                                if (retrySec > 0L) " (retry_after=$retrySec)" else "")
-                            delay(waitSec * 1000L)
-                        }
-                        msg.contains("409") || msg.contains("Conflict", true) ||
-                            msg.contains("webhook", true) -> {
-                            val reason2 = "конфликт: токен уже опрашивается другим приложением. Останови второй экземпляр"
-                            setState(botId) { it.copy(lastError = reason2) }
-                            addProblem(botId, "conflict", reason2)
-                            delay(POLL_ERROR_MS)
-                        }
-                        else -> {
-                            val reason2 = msg.ifBlank { "ошибка сети" }
-                            setState(botId) { it.copy(lastError = reason2) }
-                            addProblem(botId, "network", reason2)
-                            delay(POLL_ERROR_MS)
+                            apiErr?.isRateLimit == true || msg.contains("HTTP 429") -> {
+                                pollRateLimitStreak++
+                                val retrySec = apiErr?.retryAfterSec ?: TelegramRateLimit.parseRetryAfterSec(msg)
+                                val waitSec = TelegramRateLimit.backoffSec(retrySec, pollRateLimitStreak, minSec = 15L, maxSec = 300L)
+                                val reason2 = "Telegram ограничил запросы (HTTP 429) — ждём $waitSec с"
+                                setState(botId) { it.copy(lastError = reason2) }
+                                addProblem(botId, "network", reason2)
+                                BotLog.log(botId, "⏳ HTTP 429 на getUpdates: ждём $waitSec с" +
+                                    if (retrySec > 0L) " (retry_after=$retrySec)" else "")
+                                delay(waitSec * 1000L)
+                            }
+                            msg.contains("409") || msg.contains("Conflict", true) ||
+                                msg.contains("webhook", true) -> {
+                                val reason2 = "конфликт: токен уже опрашивается другим приложением. Останови второй экземпляр"
+                                setState(botId) { it.copy(lastError = reason2) }
+                                addProblem(botId, "conflict", reason2)
+                                delay(POLL_ERROR_MS)
+                            }
+                            else -> {
+                                val reason2 = msg.ifBlank { "ошибка сети" }
+                                setState(botId) { it.copy(lastError = reason2) }
+                                addProblem(botId, "network", reason2)
+                                delay(POLL_ERROR_MS)
+                            }
                         }
                     }
                 }
+            } finally {
+                schedJob.cancel()
             }
         }
     }
