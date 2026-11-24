@@ -18,6 +18,8 @@ import com.botcontrol.admin.data.InlineBtn
 import com.botcontrol.admin.data.withIds
 import com.botcontrol.admin.data.LocalBotStore
 import com.botcontrol.admin.data.telegram.TelegramApi
+import com.botcontrol.admin.data.telegram.TelegramApiException
+import com.botcontrol.admin.data.telegram.TelegramRateLimit
 import com.botcontrol.admin.data.telegram.TgCallback
 import com.botcontrol.admin.data.telegram.TgMessage
 import com.botcontrol.admin.llm.BotScript
@@ -25,16 +27,23 @@ import com.botcontrol.admin.llm.DeviceLlm
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class LocalBotState(
     val botId: Long = 0L,
@@ -59,6 +68,9 @@ data class LocalBotState(
 class LocalBotService : Service() {
 
     private var scope: CoroutineScope = newScope()
+    private val botJobs = ConcurrentHashMap<Long, Job>()
+    private val activeTokens = ConcurrentHashMap<Long, Pair<Job, String>>()
+    private val startMutex = Mutex()
 
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -70,10 +82,15 @@ class LocalBotService : Service() {
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_STOP_BOT) {
-            // Остановить ОДНОГО бота: его циклы выходят по running=false.
+            // Остановить ОДНОГО бота: отменяем его корутину (и активный long-poll).
             val botId = intent.getLongExtra(EXTRA_BOT_ID, 0L)
-            if (botId > 0) setState(botId) { it.copy(running = false) }
+            if (botId > 0) stopBotLoop(botId)
             refreshNotification()
+            val anyLeft = states.value.values.any { it.running }
+            if (!anyLeft) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
             return START_STICKY
         }
         if (intent?.action == ACTION_START_BOT) {
@@ -115,7 +132,16 @@ class LocalBotService : Service() {
 
     private fun shutdown() {
         states.value = states.value.mapValues { it.value.copy(running = false) }
+        botJobs.values.forEach { it.cancel() }
+        botJobs.clear()
+        activeTokens.clear()
         scope.cancel()
+    }
+
+    private fun stopBotLoop(botId: Long) {
+        setState(botId) { it.copy(running = false) }
+        botJobs.remove(botId)?.cancel()
+        activeTokens.remove(botId)
     }
 
     /** Scope пересоздаём только если он был отменён (глобальный стоп). */
@@ -123,130 +149,223 @@ class LocalBotService : Service() {
         if (!scope.isActive) scope = newScope()
     }
 
-    /** Запуск одного бота: защита от двойного запуска и выключенных профилей. */
-    private suspend fun startBotLoop(botId: Long) {
+    /** Запуск одного бота: сериализация, отмена старого цикла и защита от дублей токена. */
+    private suspend fun startBotLoop(botId: Long) = startMutex.withLock {
         val store = (application as BotControlApp).localStore
         val profile = store.profiles().firstOrNull { it.id == botId }
         if (profile == null || !profile.enabled) {
             setState(botId) { it.copy(running = false, lastError = "Бот выключен или удалён") }
-            return
+            return@withLock
         }
-        if (states.value[botId]?.running == true) return // уже работает
-        val existing = states.value[botId]
-        states.value = states.value + (botId to
-            (existing ?: LocalBotState(botId = botId)).copy(running = true, lastError = ""))
-        runBotLoop(botId)
-    }
-
-    private suspend fun runBotLoop(botId: Long) {
-        val app = application as BotControlApp
-        val store = app.localStore
+        val existingJob = botJobs[botId]
+        if (existingJob?.isActive == true && states.value[botId]?.running == true) {
+            return@withLock // уже работает
+        }
+        existingJob?.cancel()
         val token = store.botToken(botId)
         if (token.isNullOrBlank()) {
             setState(botId) { it.copy(running = false, lastError = "Токен бота не задан") }
-            return
+            return@withLock
         }
+        val tKey = TelegramRateLimit.tokenKey(token)
+        val duplicateOwner = activeTokens.entries.firstOrNull { (id, pair) ->
+            id != botId && pair.second == tKey && pair.first.isActive
+        }?.key
+        if (duplicateOwner != null) {
+            val msg = "Этот токен уже запущен в профиле #$duplicateOwner — дубль остановлен (защита от HTTP 429/409)"
+            addProblem(botId, "conflict", msg)
+            setState(botId) { it.copy(running = false, lastError = msg) }
+            BotLog.log(botId, "⚠️ $msg")
+            return@withLock
+        }
+        val existing = states.value[botId]
+        states.value = states.value + (botId to
+            (existing ?: LocalBotState(botId = botId)).copy(running = true, lastError = ""))
+        lateinit var job: Job
+        job = scope.launch(start = CoroutineStart.LAZY) {
+            val self = coroutineContext[Job]
+            try {
+                runBotLoop(botId, token)
+            } finally {
+                if (self != null) {
+                    activeTokens.remove(botId, self to tKey)
+                    if (botJobs.remove(botId, self)) {
+                        setState(botId) { it.copy(running = false) }
+                    }
+                }
+                refreshNotification()
+            }
+        }
+        botJobs[botId] = job
+        activeTokens[botId] = job to tKey
+        job.start()
+    }
+
+    private suspend fun runBotLoop(botId: Long, token: String) {
+        val app = application as BotControlApp
+        val store = app.localStore
         val api = TelegramApi(token)
         var botName = ""
-        var reason = ""
-        api.validateToken().onSuccess { name ->
-            botName = name
-            store.updateProfile(
-                (store.profile(botId) ?: com.botcontrol.admin.data.BotProfile(botId))
-                    .copy(username = name))
-        }.onFailure { reason = it.message ?: "ошибка сети" }
-        if (reason.isNotBlank() && reason.containsAny("401", "404")) {
-            addProblem(botId, "token", reason)
-            setState(botId) { it.copy(running = false, lastError = reason) }
-            return
-        }
-        if (botName.isBlank()) {
-            // сеть недоступна: остаёмся в фоне и ретраим каждые 15 секунд
-            setState(botId) {
-                it.copy(lastError = reason.ifBlank { "ошибка сети" } + " — повторяем каждые 15 с")
-            }
-            addProblem(botId, "network", reason.ifBlank { "нет связи" })
-            while (scope.isActive && states.value[botId]?.running == true && botName.isBlank()) {
-                delay(15_000)
-                api.validateToken().onSuccess { name ->
-                    botName = name
-                    store.updateProfile(
-                        (store.profile(botId) ?: com.botcontrol.admin.data.BotProfile(botId))
-                            .copy(username = name))
-                    setState(botId) { it.copy(botUsername = name, lastError = "") }
-                    resolveProblem(botId, "network")
-                }.onFailure { e ->
-                    val r = e.message ?: "ошибка сети"
-                    if (r.containsAny("401", "404")) {
-                        addProblem(botId, "token", r)
-                        setState(botId) { it.copy(running = false, lastError = r) }
-                        return
-                    }
-                    setState(botId) { it.copy(lastError = r) }
+        var meStreak = 0
+        while (currentCoroutineContext().isActive && states.value[botId]?.running == true && botName.isBlank()) {
+            val res = api.validateToken()
+            res.onSuccess { name ->
+                botName = name
+                meStreak = 0
+                store.updateProfile(
+                    (store.profile(botId) ?: com.botcontrol.admin.data.BotProfile(botId))
+                        .copy(username = name))
+                resolveProblem(botId, "token")
+                resolveProblem(botId, "network")
+                resolveProblem(botId, "conflict")
+            }.onFailure { err ->
+                val apiErr = err as? TelegramApiException
+                val msg = err.message ?: "ошибка сети"
+                if (apiErr?.isAuthError == true || (apiErr == null && msg.containsAny("HTTP 401", "HTTP 404", "(401)", "(404)"))) {
+                    addProblem(botId, "token", msg)
+                    setState(botId) { it.copy(running = false, lastError = msg) }
+                    return
+                }
+                if (apiErr?.isRateLimit == true || msg.contains("HTTP 429")) {
+                    meStreak++
+                    val retrySec = apiErr?.retryAfterSec ?: TelegramRateLimit.parseRetryAfterSec(msg)
+                    val waitSec = TelegramRateLimit.backoffSec(retrySec, meStreak, minSec = 15L, maxSec = 300L)
+                    val info = "Telegram ограничил запросы (HTTP 429) — ждём $waitSec с"
+                    addProblem(botId, "network", info)
+                    setState(botId) { it.copy(lastError = info) }
+                    BotLog.log(botId, "⏳ HTTP 429 при проверке токена: пауза $waitSec с" +
+                        if (retrySec > 0L) " (retry_after=$retrySec)" else "")
+                    delay(waitSec * 1000L)
+                } else {
+                    addProblem(botId, "network", msg)
+                    setState(botId) { it.copy(lastError = "$msg — повторяем каждые 15 с") }
+                    delay(15_000L)
                 }
             }
-            if (states.value[botId]?.running != true) return
         }
+        if (botName.isBlank() || states.value[botId]?.running != true) return
+
         setState(botId) { it.copy(botUsername = botName, running = true, lastError = "") }
         BotLog.log(botId, "🚀 Бот запущен (правил: ${runCatching { app.repository.botRules(botId).size }.getOrDefault(-1)}) · BotControl v$appVersion")
         refreshNotification()
 
-        // Главное меню Telegram (кнопка «Меню») — применяем сохранённый список.
+        // Главное меню Telegram: применяем только если команды изменились с прошлой успешной синхронизации.
         val menuCommands = store.menuCommands(botId)
         if (menuCommands.isNotEmpty()) {
-            api.setMyCommands(menuCommands.map { it.command to it.description })
-                .onSuccess {
-                    BotLog.log(botId, "📜 Главное меню применено (${menuCommands.size} команд)")
-                    resolveProblem(botId, "menu")
-                }
-                .onFailure { e ->
-                    BotLog.log(botId, "⚠️ Меню не применено: ${e.message?.take(160)}")
-                    addProblem(botId, "menu", "Меню Telegram: ${e.message?.take(140)}")
-                }
+            val menuSig = LocalBotStore.computeMenuSignature(TelegramRateLimit.tokenKey(token), menuCommands)
+            if (store.menuSignature(botId) != menuSig) {
+                api.setMyCommands(menuCommands.map { it.command to it.description })
+                    .onSuccess {
+                        store.setMenuSignature(botId, menuSig)
+                        BotLog.log(botId, "📜 Главное меню применено (${menuCommands.size} команд)")
+                        resolveProblem(botId, "menu")
+                    }
+                    .onFailure { e ->
+                        val apiErr = e as? TelegramApiException
+                        if (apiErr?.isRateLimit == true) {
+                            val waitSec = TelegramRateLimit.backoffSec(apiErr.retryAfterSec, 1, minSec = 15L, maxSec = 300L)
+                            BotLog.log(botId, "⏳ Меню Telegram: HTTP 429, пауза $waitSec с")
+                            addProblem(botId, "menu", "Меню Telegram: пауза $waitSec с (HTTP 429)")
+                        } else {
+                            BotLog.log(botId, "⚠️ Меню не применено: ${e.message?.take(160)}")
+                            addProblem(botId, "menu", "Меню Telegram: ${e.message?.take(140)}")
+                        }
+                    }
+            } else {
+                resolveProblem(botId, "menu")
+            }
         }
 
-        // A leftover webhook permanently blocks getUpdates — remove it (no-op if none).
-        api.deleteWebhook()
+        // Опрос и планировщик живут в одном дочернем coroutineScope бота:
+        // при остановке отменяются оба одновременно.
+        var backlogDropped = false
+        var backlogPages = 0
+        var offset = 0L
+        var pollRateLimitStreak = 0
+        var webhookCleared = false
 
-        // Confirm any backlog silently: no reply spam to messages sent before start.
-        var offset = runCatching { api.getUpdates(0, 0).third }.getOrDefault(0L)
+        coroutineScope {
+            val botScope = this
+            launch { schedulerLoop(botId, store, api) }
 
-        // Планировщик напоминаний этого бота живёт рядом с опросом.
-        scope.launch { schedulerLoop(botId, store, api) }
-
-        while (scope.isActive && states.value[botId]?.running == true) {
-            try {
-                val (messages, callbacks, nextOffset) = api.getUpdates(offset)
-                offset = nextOffset
-                setState(botId) {
-                    it.copy(
-                        lastPollAt = System.currentTimeMillis() / 1000, lastError = "",
-                    )
+            while (isActive && states.value[botId]?.running == true) {
+                try {
+                    val timeoutSec = if (backlogDropped) 25 else 0
+                    val (messages, callbacks, nextOffset) = api.getUpdates(offset, timeoutSec)
+                    offset = nextOffset
+                    pollRateLimitStreak = 0
+                    setState(botId) {
+                        it.copy(
+                            lastPollAt = System.currentTimeMillis() / 1000, lastError = "",
+                        )
+                    }
+                    resolveProblem(botId, "network")
+                    resolveProblem(botId, "conflict")
+                    if (!backlogDropped) {
+                        // Confirm any backlog silently: no reply spam to messages sent before start.
+                        backlogPages++
+                        if (messages.size + callbacks.size < 100 || backlogPages >= 5) {
+                            backlogDropped = true
+                        }
+                        continue
+                    }
+                    messages.forEach { msg ->
+                        handle(app, store, api, botId, msg, botScope)
+                        setState(botId) { it.copy(processed = it.processed + 1) }
+                    }
+                    callbacks.forEach { cb ->
+                        handleCallback(app, store, api, botId, cb, botScope)
+                        setState(botId) { it.copy(processed = it.processed + 1) }
+                    }
+                    refreshNotification()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    val apiErr = e as? TelegramApiException
+                    val msg = e.message.orEmpty()
+                    when {
+                        apiErr?.isAuthError == true -> {
+                            addProblem(botId, "token", msg)
+                            setState(botId) { it.copy(running = false, lastError = msg) }
+                            return@coroutineScope
+                        }
+                        !webhookCleared && msg.contains("webhook", true) -> {
+                            webhookCleared = true
+                            BotLog.log(botId, "🔧 Активен webhook — снимаю через deleteWebhook")
+                            api.deleteWebhook().onFailure { wErr ->
+                                val wApi = wErr as? TelegramApiException
+                                if (wApi?.isRateLimit == true) {
+                                    val waitSec = TelegramRateLimit.backoffSec(wApi.retryAfterSec, 1, minSec = 15L, maxSec = 300L)
+                                    delay(waitSec * 1000L)
+                                }
+                            }
+                        }
+                        apiErr?.isRateLimit == true || msg.contains("HTTP 429") -> {
+                            pollRateLimitStreak++
+                            val retrySec = apiErr?.retryAfterSec ?: TelegramRateLimit.parseRetryAfterSec(msg)
+                            val waitSec = TelegramRateLimit.backoffSec(retrySec, pollRateLimitStreak, minSec = 15L, maxSec = 300L)
+                            val reason2 = "Telegram ограничил запросы (HTTP 429) — ждём $waitSec с"
+                            setState(botId) { it.copy(lastError = reason2) }
+                            addProblem(botId, "network", reason2)
+                            BotLog.log(botId, "⏳ HTTP 429 на getUpdates: ждём $waitSec с" +
+                                if (retrySec > 0L) " (retry_after=$retrySec)" else "")
+                            delay(waitSec * 1000L)
+                        }
+                        msg.contains("409") || msg.contains("Conflict", true) ||
+                            msg.contains("webhook", true) -> {
+                            val reason2 = "конфликт: токен уже опрашивается другим приложением. Останови второй экземпляр"
+                            setState(botId) { it.copy(lastError = reason2) }
+                            addProblem(botId, "conflict", reason2)
+                            delay(POLL_ERROR_MS)
+                        }
+                        else -> {
+                            val reason2 = msg.ifBlank { "ошибка сети" }
+                            setState(botId) { it.copy(lastError = reason2) }
+                            addProblem(botId, "network", reason2)
+                            delay(POLL_ERROR_MS)
+                        }
+                    }
                 }
-                resolveProblem(botId, "network")
-                resolveProblem(botId, "conflict")
-                messages.forEach { msg ->
-                    handle(app, store, api, botId, msg)
-                    setState(botId) { it.copy(processed = it.processed + 1) }
-                }
-                callbacks.forEach { cb ->
-                    handleCallback(app, store, api, botId, cb)
-                    setState(botId) { it.copy(processed = it.processed + 1) }
-                }
-                refreshNotification()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                val msg = e.message.orEmpty()
-                val reason2 = when {
-                    msg.contains("409") || msg.contains("Conflict", true) ||
-                        msg.contains("webhook", true) ->
-                        "конфликт: токен уже опрашивается другим приложением. Останови второй экземпляр"
-                    else -> msg.ifBlank { "ошибка сети" }
-                }
-                setState(botId) { it.copy(lastError = reason2) }
-                addProblem(botId, if (reason2.contains("конфликт")) "conflict" else "network", reason2)
-                delay(POLL_ERROR_MS)
             }
         }
     }
@@ -294,6 +413,7 @@ class LocalBotService : Service() {
         api: TelegramApi,
         botId: Long,
         msg: TgMessage,
+        botScope: CoroutineScope,
     ) {
         store.setLastChatId(msg.chatId, botId)
         val text = if (msg.text.isBlank() && msg.kind.isNotBlank()) "[${msg.kind}]" else msg.text.trim()
@@ -357,7 +477,7 @@ class LocalBotService : Service() {
         BotLog.log(botId, "💬 Источник: ${decision.source}; ответ: '${decision.reply.take(60)}'")
         decision.anim?.let { spec ->
             val items = store.packs().firstOrNull { it.id == spec.packId }?.items.orEmpty()
-            AnimPlayer.play(scope, api, botId, msg.chatId, spec, msg.firstName, items, decision.menu)
+            AnimPlayer.play(botScope, api, botId, msg.chatId, spec, msg.firstName, items, decision.menu)
             return
         }
         if (decision.dice.isNotBlank()) {
@@ -388,6 +508,7 @@ class LocalBotService : Service() {
         api: TelegramApi,
         botId: Long,
         cb: TgCallback,
+        botScope: CoroutineScope,
     ) {
         store.setLastChatId(cb.chatId, botId)
 
@@ -506,7 +627,7 @@ class LocalBotService : Service() {
                 // кнопкой (текстовые квесты, флипбук), иначе новым сообщением.
                 val spec = com.botcontrol.admin.data.Anim.decode(btn.script)
                 val items = store.packs().firstOrNull { it.id == spec.packId }?.items.orEmpty()
-                AnimPlayer.play(scope, api, botId, cb.chatId, spec, cb.firstName, items,
+                AnimPlayer.play(botScope, api, botId, cb.chatId, spec, cb.firstName, items,
                     menu = if (btn.edit) menu else emptyList(),
                     editMessageId = if (btn.edit) cb.messageId else null)
             }
@@ -556,7 +677,7 @@ class LocalBotService : Service() {
         val dayFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
         val sentToday = HashSet<String>()
         var curDate = ""
-        while (scope.isActive && states.value[botId]?.running == true) {
+        while (currentCoroutineContext().isActive && states.value[botId]?.running == true) {
             delay(20_000)
             try {
                 if (!store.remindersOn(botId)) continue
@@ -586,6 +707,7 @@ class LocalBotService : Service() {
                         sentToday.add(key)
                         continue
                     }
+                    var markDone = true
                     if (e.toChannel) {
                         // Пост в канал публикаций (например, дайджест 10:20/20:40).
                         val channel = store.channelId(botId)
@@ -597,17 +719,41 @@ class LocalBotService : Service() {
                             val dayIdx = cal.get(Calendar.DAY_OF_YEAR)
                             val postText = if (variants.isEmpty()) e.text
                                 else variants[dayIdx % variants.size]
-                            api.sendTo(channel, postText, e.menu.withIds())
-                                .onFailure { BotLog.log(botId, "❌ Пост в канал не отправлен: ${it.message ?: "?"}") }
-                            BotLog.log(botId, "📢 Пост в канал $channel: ${postText.take(60)}")
+                            val res = api.sendTo(channel, postText, e.menu.withIds())
+                            if (res.isSuccess) {
+                                BotLog.log(botId, "📢 Пост в канал $channel: ${postText.take(60)}")
+                            } else {
+                                val err = res.exceptionOrNull()
+                                val apiErr = err as? TelegramApiException
+                                BotLog.log(botId, "❌ Пост в канал не отправлен: ${err?.message ?: "?"}")
+                                if (apiErr?.isRateLimit == true) {
+                                    markDone = false
+                                    val waitSec = TelegramRateLimit.backoffSec(apiErr.retryAfterSec, 1, minSec = 15L, maxSec = 300L)
+                                    delay(waitSec * 1000L)
+                                } else if (apiErr == null || apiErr.httpCode >= 500) {
+                                    markDone = false
+                                }
+                            }
                         }
                     } else {
                         withTyping(api, store, botId, chatId)
-                        api.sendMessage(chatId, e.text, inlineMenu = e.menu.withIds())
-                            .onFailure { BotLog.log(botId, "❌ Напоминание не отправлено: ${it.message ?: "?"}") }
-                        BotLog.log(botId, "⏰ Напоминание ${e.timeLabel()}: ${e.text.take(60)}")
+                        val res = api.sendMessage(chatId, e.text, inlineMenu = e.menu.withIds())
+                        if (res.isSuccess) {
+                            BotLog.log(botId, "⏰ Напоминание ${e.timeLabel()}: ${e.text.take(60)}")
+                        } else {
+                            val err = res.exceptionOrNull()
+                            val apiErr = err as? TelegramApiException
+                            BotLog.log(botId, "❌ Напоминание не отправлено: ${err?.message ?: "?"}")
+                            if (apiErr?.isRateLimit == true) {
+                                markDone = false
+                                val waitSec = TelegramRateLimit.backoffSec(apiErr.retryAfterSec, 1, minSec = 15L, maxSec = 300L)
+                                delay(waitSec * 1000L)
+                            } else if (apiErr == null || apiErr.httpCode >= 500) {
+                                markDone = false
+                            }
+                        }
                     }
-                    sentToday.add(key)
+                    if (markDone) sentToday.add(key)
                     delay(400)
                 }
                 val remOn = store.remindersOn(botId)

@@ -125,11 +125,54 @@ def action_text(action):
 class TgError(RuntimeError):
     """Ошибка Telegram API с понятной причиной (токен в текст не попадает).
     kind: 'token' — Telegram не принял токен; 'offline' — нет сети;
+    'rate_limit' — HTTP 429 Too Many Requests;
     'api' — прочие ошибки API (в message — description из ответа)."""
-    def __init__(self, message, kind='api', code=None):
+    def __init__(self, message, kind='api', code=None, retry_after=0):
         super().__init__(message)
         self.kind = kind
         self.code = code
+        self.retry_after = max(0, int(retry_after or 0))
+
+
+def parse_retry_after(body=None, headers=None, description=''):
+    """Достаёт retry_after (в секундах) из JSON Telegram, заголовка Retry-After или текста."""
+    candidates = []
+    if isinstance(body, dict):
+        params = body.get('parameters')
+        if isinstance(params, dict) and params.get('retry_after') is not None:
+            candidates.append(params.get('retry_after'))
+    if headers is not None:
+        hdr = headers.get('Retry-After') if hasattr(headers, 'get') else None
+        if hdr is not None:
+            candidates.append(hdr)
+    for raw in candidates:
+        try:
+            val = int(str(raw).strip())
+            if val > 0:
+                return min(val, 3600)
+        except (TypeError, ValueError):
+            pass
+    for text in (description, str(body.get('description', '') if isinstance(body, dict) else '')):
+        m = re.search(r'retry\s*after\D{0,4}(\d+)', text or '', re.IGNORECASE)
+        if m:
+            val = int(m.group(1))
+            if val > 0:
+                return min(val, 3600)
+    return 0
+
+
+def rate_limit_wait_sec(exc, streak=1):
+    """Сколько секунд ждать перед повтором после HTTP 429."""
+    retry_after = getattr(exc, 'retry_after', 0) or 0
+    if retry_after <= 0:
+        retry_after = parse_retry_after(description=str(exc))
+    if retry_after > 0:
+        return min(3600, max(1, int(retry_after) + 1))
+    return min(300, 15 * (2 ** min(max(0, streak - 1), 4)))
+
+
+def is_rate_limit_error(exc):
+    return isinstance(exc, TgError) and (exc.kind == 'rate_limit' or exc.code == 429)
 
 
 def reason(exc):
@@ -140,22 +183,27 @@ def reason(exc):
 
 
 def connect_error(exc):
-    """Ошибка первого подключения: различаем токен и сеть."""
+    """Ошибка первого подключения: различаем токен, 429 и сеть."""
     if isinstance(exc, TgError):
         if exc.kind == 'token':
             return 'Токен не принят Telegram. Проверьте токен в @BotFather.'
         if exc.kind == 'offline':
             return 'Нет связи с api.telegram.org. Проверьте интернет.'
+        if is_rate_limit_error(exc):
+            wait = f'{exc.retry_after} с' if exc.retry_after > 0 else 'несколько секунд'
+            return f'Telegram ограничил запросы (HTTP 429: подождите {wait}). Это лимит на токен бота, смена VPN/Wi-Fi не поможет.'
         return f'Не удалось подключить бота: {exc}'
     return 'Не удалось подключить бота. Проверьте токен и интернет.'
 
 
-def poll_error(exc):
+def poll_error(exc, wait_sec=5):
     """Ошибка в цикле опроса: не путаем её со сбоями отправки."""
     if isinstance(exc, TgError):
         if exc.kind == 'offline':
             return 'Пропала связь с Telegram. Повторная попытка через 5 секунд.'
-        return f'Ошибка Telegram: {exc}. Повторная попытка через 5 секунд.'
+        if is_rate_limit_error(exc):
+            return f'Telegram ограничил запросы (HTTP 429). Пауза {wait_sec} с (смена VPN/Wi-Fi не поможет).'
+        return f'Ошибка Telegram: {exc}. Повторная попытка через {wait_sec} секунд.'
     return 'Ошибка связи с Telegram. Повторная попытка через 5 секунд. Проверьте сеть и убедитесь, что бот не запущен в другом месте.'
 
 
@@ -196,18 +244,29 @@ class Runtime:
             with urllib.request.urlopen(request, timeout=35) as response:
                 result = json.load(response)
         except urllib.error.HTTPError as exc:
+            body = None
             description = ''
             try:
                 body = json.load(exc)
                 description = str(body.get('description') or '')
             except Exception:
                 pass
-            kind = 'token' if exc.code in (401, 404) else 'api'
-            raise TgError(description or f'HTTP {exc.code}', kind, exc.code) from None
+            retry_after = parse_retry_after(body, getattr(exc, 'headers', None), description)
+            if exc.code == 429:
+                kind = 'rate_limit'
+            elif exc.code in (401, 404):
+                kind = 'token'
+            else:
+                kind = 'api'
+            raise TgError(description or f'HTTP {exc.code}', kind, exc.code, retry_after=retry_after) from None
         except (urllib.error.URLError, OSError, TimeoutError):
             raise TgError('нет сети', 'offline') from None
         if not result.get('ok'):
-            raise TgError(str(result.get('description') or 'Telegram API error'), 'api')
+            err_code = result.get('error_code')
+            description = str(result.get('description') or 'Telegram API error')
+            retry_after = parse_retry_after(result, description=description)
+            kind = 'rate_limit' if err_code == 429 else 'api'
+            raise TgError(description, kind, err_code, retry_after=retry_after)
         return result['result']
 
     def status(self):
@@ -258,18 +317,37 @@ class Runtime:
 
     def run(self, token, buttons, triggers, events, stop):
         try:
-            self.request(token, 'getMe', {})
+            me_streak = 0
+            while not stop.is_set():
+                try:
+                    self.request(token, 'getMe', {})
+                    break
+                except Exception as exc:
+                    if not is_rate_limit_error(exc):
+                        raise
+                    me_streak += 1
+                    wait_sec = rate_limit_wait_sec(exc, me_streak)
+                    with self.lock: self.error = connect_error(exc)
+                    self.log(f'HTTP 429 при проверке токена: пауза {wait_sec} с')
+                    if stop.wait(wait_sec):
+                        return
+            if stop.is_set():
+                return
             with self.lock:
-                if not stop.is_set(): self.state = 'running'
+                if not stop.is_set():
+                    self.state = 'running'
+                    self.error = ''
             if events:
                 threading.Thread(target=self.schedule_loop, args=(token, events, stop), daemon=True).start()
             offset = None
+            rl_streak = 0
             keyboard = {'keyboard': [[{'text': label}] for label, _ in buttons], 'resize_keyboard': True}
             while not stop.is_set():
                 try:
                     payload = {'timeout': 5, 'allowed_updates': ['message']}
                     if offset is not None: payload['offset'] = offset
                     updates = self.request(token, 'getUpdates', payload)
+                    rl_streak = 0
                     for update in updates:
                         try:
                             self.handle_update(token, update, buttons, triggers, keyboard, stop)
@@ -278,13 +356,29 @@ class Runtime:
                             # остальной пакет сообщений (W1): пишем причину и идём дальше.
                             chat_id = update.get('message', {}).get('chat', {}).get('id', '?')
                             self.log(f'Не удалось ответить · chat ID {chat_id}: {reason(exc)}')
+                            if is_rate_limit_error(exc):
+                                wait_sec = rate_limit_wait_sec(exc, 1)
+                                self.log(f'HTTP 429 при ответе: пауза {wait_sec} с')
+                                if stop.wait(wait_sec):
+                                    break
                     if updates:
                         # offset двигаем только после полной обработки пакета
                         offset = max(u['update_id'] for u in updates) + 1
                     with self.lock: self.error = ''
                 except Exception as exc:
-                    with self.lock: self.error = poll_error(exc)
-                    stop.wait(5)
+                    if isinstance(exc, TgError) and exc.kind == 'token':
+                        with self.lock: self.error = connect_error(exc)
+                        break
+                    if is_rate_limit_error(exc):
+                        rl_streak += 1
+                        wait_sec = rate_limit_wait_sec(exc, rl_streak)
+                        with self.lock: self.error = poll_error(exc, wait_sec)
+                        self.log(f'HTTP 429 на getUpdates: пауза {wait_sec} с')
+                        stop.wait(wait_sec)
+                    else:
+                        rl_streak = 0
+                        with self.lock: self.error = poll_error(exc)
+                        stop.wait(5)
         except Exception as exc:
             with self.lock: self.error = connect_error(exc)
         finally:
@@ -347,8 +441,29 @@ class Runtime:
                     sent[index] = now.strftime('%Y-%m-%d')
                     self.log('Выполнено напоминание')
                 except Exception as exc:
-                    self.log(f'Ошибка отправки напоминания ({reason(exc)}); повтор в окне допуска')
+                    if is_rate_limit_error(exc):
+                        wait_sec = rate_limit_wait_sec(exc, 1)
+                        self.log(f'HTTP 429 в расписании: пауза {wait_sec} с; повтор в окне допуска')
+                        if stop.wait(wait_sec):
+                            return
+                    else:
+                        self.log(f'Ошибка отправки напоминания ({reason(exc)}); повтор в окне допуска')
             stop.wait(5)
+
+    def _animate_request(self, token, method, payload, stop):
+        for attempt in range(2):
+            try:
+                return self.request(token, method, payload)
+            except Exception as exc:
+                if 'not modified' in str(exc).lower():
+                    return {}
+                if attempt == 0 and is_rate_limit_error(exc):
+                    wait_sec = min(60, rate_limit_wait_sec(exc, 1))
+                    self.log(f'HTTP 429 в анимации ({method}): пауза {wait_sec} с')
+                    if stop.wait(wait_sec):
+                        return None
+                    continue
+                raise
 
     def animate(self, token, chat_id, spec, user, stop, markup=None):
         try:
@@ -359,14 +474,21 @@ class Runtime:
             if stop.is_set(): return
             body = {'chat_id': chat_id, 'text': sequence[0]}
             if markup and ('inline_keyboard' not in markup or len(sequence) == 1): body['reply_markup'] = markup
-            sent = self.request(token, 'sendMessage', body)
+            sent = self._animate_request(token, 'sendMessage', body, stop)
+            if not sent: return
             for index, frame in enumerate(sequence[1:], start=1):
                 if stop.wait(spec.get('interval', 700) / 1000): break
                 edit = {'chat_id': chat_id, 'message_id': sent['message_id'], 'text': frame}
                 if markup and 'inline_keyboard' in markup and index == len(sequence) - 1: edit['reply_markup'] = markup
-                self.request(token, 'editMessageText', edit)
-        except Exception:
-            with self.lock: self.error = 'Не удалось воспроизвести анимацию. Проверьте связь и ограничения Telegram.'
+                if self._animate_request(token, 'editMessageText', edit, stop) is None:
+                    break
+        except Exception as exc:
+            with self.lock:
+                self.error = (
+                    poll_error(exc, rate_limit_wait_sec(exc, 1))
+                    if is_rate_limit_error(exc)
+                    else 'Не удалось воспроизвести анимацию. Проверьте связь и ограничения Telegram.'
+                )
         finally:
             self.animation_slots.release()
 

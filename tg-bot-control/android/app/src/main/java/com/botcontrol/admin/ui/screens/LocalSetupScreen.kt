@@ -48,6 +48,7 @@ fun LocalSetupScreen(
     var checking by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var botName by remember { mutableStateOf("") }
+    var updatedExisting by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
     val version = remember {
         runCatching {
@@ -90,16 +91,19 @@ fun LocalSetupScreen(
         if (error.isNotBlank()) ErrorText(error)
         if (botName.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
-            Text("✅ Найден бот: @$botName",
+            Text(
+                if (updatedExisting) "✅ Бот @$botName уже есть — выбран существующий профиль (без дублей)"
+                else "✅ Найден бот: @$botName",
                 color = MaterialTheme.colorScheme.primary,
-                style = MaterialTheme.typography.titleMedium)
+                style = MaterialTheme.typography.titleMedium,
+            )
         }
         Spacer(Modifier.height(16.dp))
 
         Button(
             onClick = {
                 scope.launch {
-                    checking = true; error = ""; botName = ""
+                    checking = true; error = ""; botName = ""; updatedExisting = false
                     // Extract a token-shaped string from anything pasted
                     // (handles extra spaces, quotes, "Bot Token:" prefixes)
                     val clean = Regex("\\d{6,12}:[A-Za-z0-9_-]{25,}")
@@ -112,7 +116,20 @@ fun LocalSetupScreen(
                     val result = TelegramApi(clean).validateToken()
                     result.onSuccess { username ->
                         botName = username
-                        localStore.addProfile(username.ifBlank { "Новый бот" }, clean, username)
+                        val existing = localStore.findProfileByToken(clean)
+                        if (existing != null) {
+                            updatedExisting = true
+                            localStore.updateProfile(
+                                existing.copy(
+                                    name = existing.name.ifBlank { username.ifBlank { "Бот" } },
+                                    username = username,
+                                    enabled = true,
+                                )
+                            )
+                            localStore.setActiveBot(existing.id)
+                        } else {
+                            localStore.addProfile(username.ifBlank { "Новый бот" }, clean, username)
+                        }
                         localStore.setMode("local")
                     }.onFailure { e -> error = e.message ?: "Не удалось проверить токен" }
                     checking = false
@@ -130,20 +147,29 @@ fun LocalSetupScreen(
                 Text("Дальше — запуск бота →")
             }
         }
-        // сеть не пустила, но токен похож на настоящий -> можно запустить в фоне
-        if (botName.isBlank() && error.contains("Нет связи")) {
+        // сеть не пустила или Telegram временно ограничил запросы (429) -> можно сохранить и дождаться автоматически
+        if (botName.isBlank() && (error.contains("Нет связи") || error.contains("HTTP 429"))) {
             Spacer(Modifier.height(8.dp))
             Button(onClick = {
                 scope.launch {
                     val clean = Regex("\\d{6,12}:[A-Za-z0-9_-]{25,}").find(token)?.value.orEmpty()
                     if (clean.isNotBlank()) {
-                        localStore.addProfile("Новый бот", clean, "")
+                        val existing = localStore.findProfileByToken(clean)
+                        if (existing != null) {
+                            localStore.updateProfile(existing.copy(enabled = true))
+                            localStore.setActiveBot(existing.id)
+                        } else {
+                            localStore.addProfile("Новый бот", clean, "")
+                        }
                         localStore.setMode("local")
                         onDone()
                     }
                 }
             }, modifier = Modifier.fillMaxWidth()) {
-                Text("Всё равно сохранить и запустить (бот ждёт сеть сам)")
+                Text(
+                    if (error.contains("HTTP 429")) "Всё равно сохранить (бот дождётся паузы 429 сам)"
+                    else "Всё равно сохранить и запустить (бот ждёт сеть сам)"
+                )
             }
         }
         Spacer(Modifier.height(12.dp))

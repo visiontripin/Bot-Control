@@ -186,6 +186,7 @@ fun BotTreeScreen(
                                     val p = profile ?: return@launch
                                     localStore.updateProfile(p.copy(enabled = on))
                                     profile = p.copy(enabled = on)
+                                    if (!on && st?.running == true) LocalBotService.stopBot(context, botId)
                                 }
                             },
                         )
