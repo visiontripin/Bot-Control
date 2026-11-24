@@ -4,7 +4,8 @@ import com.botcontrol.admin.data.Anim
 import com.botcontrol.admin.data.AnimSpec
 import com.botcontrol.admin.data.InlineBtn
 import com.botcontrol.admin.data.telegram.TelegramApi
-import com.botcontrol.admin.llm.DeviceLlm
+import com.botcontrol.admin.data.telegram.TelegramApiException
+import com.botcontrol.admin.data.telegram.TelegramRateLimit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -81,10 +82,13 @@ object AnimPlayer {
 
         BotLog.log(botId, "🎞 Анимация «${Anim.preset(spec.preset).title}»: кадров ${frames.size}, шаг ${step} мс")
 
-        suspend fun sendNew(text: String, withMenu: Boolean): Int? =
-            api.sendMessageForId(chatId, fmt(text), mode, if (withMenu) menu else emptyList())
-                .onFailure { BotLog.log(botId, "❌ Анимация: первый кадр не отправлен: ${it.message?.take(160)}") }
-                .getOrNull()?.takeIf { it > 0 }
+        suspend fun sendNew(text: String, withMenu: Boolean): Int? {
+            val res = callWithRateLimitRetry(botId) {
+                api.sendMessageForId(chatId, fmt(text), mode, if (withMenu) menu else emptyList())
+            }
+            res.onFailure { BotLog.log(botId, "❌ Анимация: первый кадр не отправлен: ${it.message?.take(160)}") }
+            return res.getOrNull()?.takeIf { it > 0 }
+        }
 
         var mid: Int
         var start = 0
@@ -143,7 +147,9 @@ object AnimPlayer {
         val onlyOne = frames.size == 1 && finalText.isBlank()
 
         suspend fun sendFirst(f: Anim.PhotoFrame): Int? {
-            val r = api.sendPhotoForId(chatId, resolve(f.src), f.caption, if (onlyOne) menu else emptyList())
+            val r = callWithRateLimitRetry(botId) {
+                api.sendPhotoForId(chatId, resolve(f.src), f.caption, if (onlyOne) menu else emptyList())
+            }
             r.onFailure { BotLog.log(botId, "❌ Фото-анимация: первый кадр не отправлен: ${it.message?.take(160)}") }
             val (id, fileId) = r.getOrNull() ?: return null
             remember(f.src, fileId)
@@ -192,6 +198,28 @@ object AnimPlayer {
         }
     }
 
+    private suspend fun <T> callWithRateLimitRetry(
+        botId: Long,
+        block: suspend () -> Result<T>,
+    ): Result<T> {
+        val first = block()
+        if (first.isSuccess) return first
+        val err = first.exceptionOrNull()
+        val apiErr = err as? TelegramApiException
+        val msg = err?.message.orEmpty()
+        if (apiErr?.isRateLimit == true || msg.contains("HTTP 429")) {
+            val retrySec = apiErr?.retryAfterSec?.takeIf { it > 0L }
+                ?: TelegramRateLimit.parseRetryAfterSec(msg).takeIf { it > 0L }
+                ?: 3L
+            if (retrySec > 60L) return first
+            val waitSec = retrySec.coerceIn(1L, 60L)
+            BotLog.log(botId, "⏳ Анимация: Telegram просит паузу $waitSec с (слишком частые правки)")
+            delay((waitSec + 1L) * 1000L + 50L)
+            return block()
+        }
+        return first
+    }
+
     /**
      * Один вызов Bot API с повтором при 429 (ждём retry_after).
      * null — успех («message is not modified» тоже успех), иначе текст ошибки.
@@ -200,13 +228,19 @@ object AnimPlayer {
         repeat(2) { n ->
             val r = block()
             if (r.isSuccess) return null
-            val msg = r.exceptionOrNull()?.message.orEmpty()
+            val err = r.exceptionOrNull()
+            val apiErr = err as? TelegramApiException
+            val msg = err?.message.orEmpty()
             when {
                 msg.contains("not modified", ignoreCase = true) -> return null
-                msg.contains("HTTP 429") && n == 0 -> {
-                    val wait = Regex("retry_after\\D{0,4}(\\d+)").find(msg)?.groupValues?.get(1)?.toLongOrNull() ?: 2L
-                    BotLog.log(botId, "⏳ Анимация: Telegram просит паузу ${wait} с (слишком частые правки)")
-                    delay(wait.coerceIn(1, 30) * 1000L)
+                (apiErr?.isRateLimit == true || msg.contains("HTTP 429")) && n == 0 -> {
+                    val retrySec = apiErr?.retryAfterSec?.takeIf { it > 0L }
+                        ?: TelegramRateLimit.parseRetryAfterSec(msg).takeIf { it > 0L }
+                        ?: 2L
+                    if (retrySec > 60L) return msg.ifBlank { "HTTP 429: Telegram просит паузу $retrySec с" }
+                    val waitSec = retrySec.coerceIn(1L, 60L)
+                    BotLog.log(botId, "⏳ Анимация: Telegram просит паузу $waitSec с (слишком частые правки)")
+                    delay((waitSec + 1L) * 1000L + 50L)
                 }
                 else -> return msg.ifBlank { "ошибка" }
             }

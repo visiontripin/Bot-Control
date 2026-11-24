@@ -32,6 +32,7 @@ import com.botcontrol.admin.data.LocalBotStore
 import com.botcontrol.admin.data.MenuCommand
 import com.botcontrol.admin.data.local.BotRuleEntity
 import com.botcontrol.admin.data.telegram.TelegramApi
+import com.botcontrol.admin.data.telegram.TelegramRateLimit
 import com.botcontrol.admin.llm.DeviceLlm
 import com.botcontrol.admin.ui.components.SectionTitle
 import kotlinx.coroutines.launch
@@ -183,20 +184,25 @@ fun BotSettingsScreen(localStore: LocalBotStore, repository: com.botcontrol.admi
         Button(onClick = {
             scope.launch {
                 val botId = localStore.activeBotId()
-                localStore.setMenuCommands(menu.filter { it.command.isNotBlank() }, botId)
+                val cleanMenu = menu.filter { it.command.isNotBlank() }
+                localStore.setMenuCommands(cleanMenu, botId)
                 val token = localStore.botToken(botId)
                 if (token.isNullOrBlank()) {
                     error = "Токен не задан — сначала добавь бота"
                     return@launch
                 }
                 TelegramApi(token)
-                    .setMyCommands(menu.filter { it.command.isNotBlank() }
-                        .map { it.command to it.description })
+                    .setMyCommands(cleanMenu.map { it.command to it.description })
                     .onSuccess {
+                        error = ""
+                        localStore.setMenuSignature(
+                            botId,
+                            LocalBotStore.computeMenuSignature(TelegramRateLimit.tokenKey(token), cleanMenu),
+                        )
                         message = "Меню применено в Telegram — проверь кнопку «Меню» у бота"
                         scope.launch {
                             com.botcontrol.admin.service.BotLog.log(localStore, botId,
-                                "📜 Главное меню применено вручную (${menu.size} команд)")
+                                "📜 Главное меню применено вручную (${cleanMenu.size} команд)")
                         }
                     }
                     .onFailure { error = it.message ?: "Не удалось применить меню" }

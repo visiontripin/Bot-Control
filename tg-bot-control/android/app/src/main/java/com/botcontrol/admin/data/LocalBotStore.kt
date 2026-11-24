@@ -130,6 +130,13 @@ class LocalBotStore(context: Context) {
 
     suspend fun profile(id: Long): BotProfile? = profiles().firstOrNull { it.id == id }
 
+    /** Ищет существующий профиль с тем же токеном, чтобы не создавать дубли и не бить 429/409. */
+    suspend fun findProfileByToken(token: String): BotProfile? = withContext(Dispatchers.IO) {
+        val clean = token.trim()
+        if (clean.isBlank()) return@withContext null
+        profiles().firstOrNull { p -> botToken(p.id)?.trim() == clean }
+    }
+
     suspend fun botToken(botId: Long = -1L): String? = withContext(Dispatchers.IO) {
         val id = resolveId(botId)
         encrypted.getString("token_$id", null) ?: if (id == 1L) encrypted.getString(KEY_BOT_TOKEN, null) else null
@@ -303,7 +310,7 @@ class LocalBotStore(context: Context) {
                 typingKey(botId), cooldownKey(botId), historyKey(botId),
                 clarOnKey(botId), clarKey(botId), llmKey(botId),
                 aiModelKey(botId), aiTempKey(botId), aiTopKKey(botId), aiMaxTokKey(botId),
-                chanKey(botId), listOnKey(botId), listingsKey(botId),
+                chanKey(botId), listOnKey(botId), listingsKey(botId), menuSigKey(botId),
             ).forEach { key -> it.remove(key) }
         }
     }
@@ -411,6 +418,14 @@ class LocalBotStore(context: Context) {
         appContext.localBotDataStore.edit { it[menuKey(id)] = BotJson.save(value) }
     }
 
+    /** Подпись последнего успешно применённого меню (не дёргаем setMyCommands зря при каждом старте). */
+    suspend fun menuSignature(botId: Long): String =
+        appContext.localBotDataStore.data.map { it[menuSigKey(botId)].orEmpty() }.first()
+
+    suspend fun setMenuSignature(botId: Long, value: String) {
+        appContext.localBotDataStore.edit { it[menuSigKey(botId)] = value }
+    }
+
     // ---------- параметры разговорного режима (на бота) ----------
     suspend fun typingSeconds(botId: Long = -1L): Int {
         val id = resolveId(botId)
@@ -463,27 +478,31 @@ class LocalBotStore(context: Context) {
         appContext.localBotDataStore.edit { it[clarKey(id)] = BotJson.save(value.take(50)) }
     }
 
-    private companion object {
-        const val KEY_BOT_TOKEN = "bot_token"
-        val KEY_MODE = stringPreferencesKey("mode")
-        val KEY_BOT_USERNAME = stringPreferencesKey("bot_username")
-        val KEY_LLM_ENABLED = booleanPreferencesKey("llm_enabled")
-        val KEY_SYSTEM_PROMPT = stringPreferencesKey("system_prompt")
-        val KEY_DEFAULT_REPLY = stringPreferencesKey("default_reply")
-        val KEY_KEYBOARD = stringPreferencesKey("keyboard")
-        val KEY_REMINDERS_ON = booleanPreferencesKey("reminders_on")
-        val KEY_SCHEDULE = stringPreferencesKey("schedule")
-        val KEY_LAST_CHAT = longPreferencesKey("last_chat_id")
-        val KEY_PACKS = stringPreferencesKey("reply_packs")
-        val KEY_TYPING = intPreferencesKey("typing_seconds")
-        val KEY_COOLDOWN = intPreferencesKey("cooldown_sec")
-        val KEY_HISTORY = intPreferencesKey("history_limit")
-        val KEY_CLARIFY_ON = booleanPreferencesKey("clarify_enabled")
-        val KEY_CLARIFY = stringPreferencesKey("clarify_questions")
-        val KEY_MENU = stringPreferencesKey("menu_commands")
-        val KEY_PROFILES = stringPreferencesKey("bot_profiles")
-        val KEY_ACTIVE_BOT = longPreferencesKey("active_bot_id")
-        val KEY_AUTOSTART = booleanPreferencesKey("autostart_on_boot")
+    companion object {
+        fun computeMenuSignature(tokenKey: String, commands: List<MenuCommand>): String =
+            tokenKey + ":" + commands.filter { it.command.isNotBlank() }
+                .joinToString("|") { "${it.command.trim()}=${it.description.trim()}" }
+
+        private const val KEY_BOT_TOKEN = "bot_token"
+        private val KEY_MODE = stringPreferencesKey("mode")
+        private val KEY_BOT_USERNAME = stringPreferencesKey("bot_username")
+        private val KEY_LLM_ENABLED = booleanPreferencesKey("llm_enabled")
+        private val KEY_SYSTEM_PROMPT = stringPreferencesKey("system_prompt")
+        private val KEY_DEFAULT_REPLY = stringPreferencesKey("default_reply")
+        private val KEY_KEYBOARD = stringPreferencesKey("keyboard")
+        private val KEY_REMINDERS_ON = booleanPreferencesKey("reminders_on")
+        private val KEY_SCHEDULE = stringPreferencesKey("schedule")
+        private val KEY_LAST_CHAT = longPreferencesKey("last_chat_id")
+        private val KEY_PACKS = stringPreferencesKey("reply_packs")
+        private val KEY_TYPING = intPreferencesKey("typing_seconds")
+        private val KEY_COOLDOWN = intPreferencesKey("cooldown_sec")
+        private val KEY_HISTORY = intPreferencesKey("history_limit")
+        private val KEY_CLARIFY_ON = booleanPreferencesKey("clarify_enabled")
+        private val KEY_CLARIFY = stringPreferencesKey("clarify_questions")
+        private val KEY_MENU = stringPreferencesKey("menu_commands")
+        private val KEY_PROFILES = stringPreferencesKey("bot_profiles")
+        private val KEY_ACTIVE_BOT = longPreferencesKey("active_bot_id")
+        private val KEY_AUTOSTART = booleanPreferencesKey("autostart_on_boot")
 
         // ключи с суффиксом botId
         private fun schedKey(id: Long) = stringPreferencesKey("schedule_$id")
@@ -503,6 +522,7 @@ class LocalBotStore(context: Context) {
         private fun aiTempKey(id: Long) = floatPreferencesKey("ai_temperature_$id")
         private fun aiTopKKey(id: Long) = intPreferencesKey("ai_top_k_$id")
         private fun aiMaxTokKey(id: Long) = intPreferencesKey("ai_max_tokens_$id")
+        private fun menuSigKey(id: Long) = stringPreferencesKey("menu_sig_$id")
     }
 }
 

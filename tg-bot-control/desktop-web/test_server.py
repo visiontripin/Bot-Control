@@ -1,5 +1,6 @@
 import threading
 import json
+from io import BytesIO
 from unittest.mock import patch
 from datetime import datetime
 import http.client
@@ -8,7 +9,8 @@ import sys
 from http.server import ThreadingHTTPServer
 import time
 import unittest
-from server import Runtime, Handler, compile_bot, action_text, match_action, connect_error, TgError
+import urllib.error
+from server import Runtime, Handler, compile_bot, action_text, match_action, connect_error, poll_error, parse_retry_after, rate_limit_wait_sec, TgError
 from android_import import extract_lists
 from animations import PRESETS, frames, validate_animation
 
@@ -389,6 +391,137 @@ class FixTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+
+class RateLimit429Tests(unittest.TestCase):
+    """Проверка корректной обработки HTTP 429 Too Many Requests и retry_after."""
+
+    BOT = {'scenarios': [{'id': 'a', 'name': 'Привет', 'text': 'Ответ', 'trigger': {'type': 'command', 'value': '/start'}}], 'buttons': []}
+
+    def test_parse_retry_after_from_json_header_and_text(self):
+        self.assertEqual(parse_retry_after({'parameters': {'retry_after': 37}}), 37)
+        self.assertEqual(parse_retry_after({}, headers={'Retry-After': '19'}), 19)
+        self.assertEqual(parse_retry_after(description='Too Many Requests: retry after 12'), 12)
+        self.assertEqual(rate_limit_wait_sec(TgError('429', 'rate_limit', 429, retry_after=9), streak=1), 10)
+        self.assertEqual(rate_limit_wait_sec(TgError('429', 'rate_limit', 429, retry_after=0), streak=1), 15)
+        self.assertEqual(rate_limit_wait_sec(TgError('429', 'rate_limit', 429, retry_after=0), streak=2), 30)
+
+    def test_telegram_extracts_retry_after_from_http_429(self):
+        body = json.dumps({
+            'ok': False,
+            'error_code': 429,
+            'description': 'Too Many Requests: retry after 23',
+            'parameters': {'retry_after': 23},
+        }).encode()
+        http_err = urllib.error.HTTPError(
+            'https://api.telegram.org/bot123:ABC/getMe',
+            429,
+            'Too Many Requests',
+            {'Retry-After': '23'},
+            BytesIO(body),
+        )
+        with patch('urllib.request.urlopen', side_effect=http_err):
+            with self.assertRaises(TgError) as ctx:
+                Runtime.telegram('123:ABC', 'getMe', {})
+        self.assertEqual(ctx.exception.kind, 'rate_limit')
+        self.assertEqual(ctx.exception.code, 429)
+        self.assertEqual(ctx.exception.retry_after, 23)
+        self.assertIn('VPN', connect_error(ctx.exception))
+        self.assertIn('24 с', poll_error(ctx.exception, 24))
+
+    def test_run_waits_retry_after_on_getme_and_getupdates_and_stops_cleanly(self):
+        waits = []
+        calls = []
+
+        def request(token, method, payload):
+            calls.append(method)
+            if method == 'getMe':
+                if calls.count('getMe') == 1:
+                    raise TgError('Too Many Requests: retry after 8', 'rate_limit', 429, retry_after=8)
+                return {'id': 1}
+            if method == 'getUpdates':
+                if calls.count('getUpdates') == 1:
+                    raise TgError('Too Many Requests: retry after 11', 'rate_limit', 429, retry_after=11)
+                time.sleep(0.05)
+                return []
+            return {}
+
+        class SpyStop(threading.Event):
+            def wait(self, timeout=None):
+                waits.append(timeout)
+                return super().wait(0.01 if timeout and timeout > 1 else timeout)
+
+        with patch('threading.Event', SpyStop):
+            r = Runtime(request)
+            r.start('123:ABC', self.BOT)
+            time.sleep(0.35)
+            r.stop()
+            r.thread.join(2)
+
+        self.assertGreaterEqual(calls.count('getMe'), 2)
+        self.assertGreaterEqual(calls.count('getUpdates'), 2)
+        self.assertIn(9, waits)   # getMe retry_after=8 -> 9s
+        self.assertIn(12, waits)  # getUpdates retry_after=11 -> 12s
+
+    def test_schedule_waits_and_retries_after_429(self):
+        attempts = []
+
+        def request(token, method, payload):
+            attempts.append(method)
+            if len(attempts) == 1:
+                raise TgError('Too Many Requests: retry after 4', 'rate_limit', 429, retry_after=4)
+            return {}
+
+        bot = {
+            'scenarios': [{'id': '1', 'text': 'Напоминание'}],
+            'buttons': [],
+            'schedule': [{'id': 's1', 'time': '09:00', 'chatId': '123', 'days': [0], 'scenarioId': '1'}],
+        }
+        _, _, events = compile_bot(bot)
+        r = Runtime(request)
+        waits = []
+
+        class Stop:
+            count = 0
+            def is_set(self): return self.count >= 3
+            def wait(self, timeout):
+                waits.append(timeout)
+                self.count += 1
+                return False
+
+        with patch('server.datetime') as clock:
+            clock.now.return_value = datetime(2026, 11, 9, 9, 1)
+            r.schedule_loop('123:ABC', events, Stop())
+
+        self.assertEqual(len(attempts), 2)
+        self.assertIn(5, waits)  # retry_after=4 -> wait 5s
+
+    def test_animate_retries_once_on_429_and_ignores_not_modified(self):
+        calls = []
+
+        def request(token, method, payload):
+            calls.append((method, payload.get('text')))
+            if len(calls) == 2:
+                raise TgError('Too Many Requests: retry after 1', 'rate_limit', 429, retry_after=1)
+            if len(calls) == 4:
+                raise TgError('Bad Request: message is not modified', 'api', 400)
+            return {'message_id': 99}
+
+        r = Runtime(request)
+        r.animation_slots.acquire()
+        spec = {'preset': 'custom', 'text': 'x', 'interval': 500, 'loops': 1, 'count': 1, 'final': 'Финал', 'frames': 'Один\n---\nДва'}
+        waits = []
+
+        class Stop:
+            def is_set(self): return False
+            def wait(self, timeout):
+                waits.append(timeout)
+                return False
+
+        r.animate('123:ABC', 42, spec, 'Ира', Stop())
+        self.assertEqual([c[0] for c in calls], ['sendMessage', 'editMessageText', 'editMessageText', 'editMessageText'])
+        self.assertIn(2, waits)  # retry_after=1 -> wait 2s
+        self.assertEqual(r.status()['error'], '')
 
 
 if __name__ == '__main__': unittest.main()
