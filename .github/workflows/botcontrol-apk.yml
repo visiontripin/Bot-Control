@@ -4,8 +4,8 @@
 #   • артефакт BotControl-debug-apk (вкладка Actions → запуск → Artifacts);
 #   • аннотация «aapt» с `aapt dump badging` (package / versionCode / versionName);
 #   • если в сообщении коммита есть [apk] — тег botcontrol-v<версия>-code<код>
-#     (коммит с APK внутри, не ветка) + pre-release с файлом BotControl-debug.apk
-#     и всеми готовыми конфигами tg-bot-control/*-ready.py (прямые ссылки).
+#     (коммит с APK внутри, не ветка) + релиз с файлом BotControl-debug.apk,
+#     презентацией, инструкциями и готовыми конфигами tg-bot-control/*-ready.py.
 name: BotControl APK
 
 on:
@@ -30,6 +30,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      - name: No live tokens in the tree
+        run: python3 tg-bot-control/tools/check-no-tokens.py
 
       - name: Bot isolation check (botId in service/ and data/)
         run: python3 tg-bot-control/tools/check-bot-isolation.py
@@ -88,7 +91,7 @@ jobs:
           path: tg-bot-control/BotControl-debug.apk
           retention-days: 30
 
-      - name: Publish tag + pre-release ([apk] in commit message)
+      - name: Publish tag + release ([apk] in commit message)
         if: contains(github.event.head_commit.message, '[apk]')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -101,12 +104,6 @@ jobs:
           VC=$(grep -oP 'versionCode\s*=\s*\K\d+' "$GRADLE")
           VN=$(grep -oP 'versionName\s*=\s*"\K[^"]+' "$GRADLE")
           TAG="botcontrol-v${VN}-code${VC}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f tg-bot-control/BotControl-debug.apk
-          git commit -q -m "BotControl v${VN} (code ${VC}) — APK из ${GITHUB_SHA::7}"
-          git tag -f "$TAG"
-          git push -f origin "refs/tags/${TAG}"
           NOTES=/tmp/notes.md
           {
             echo "Debug APK, собран из \`${GITHUB_SHA::7}\` (ветка ${GITHUB_REF_NAME})."
@@ -121,7 +118,7 @@ jobs:
           # К релизу прикладываем APK и все готовые конфиги (*-ready.py),
           # чтобы у каждого нужного файла была прямая ссылка на скачивание.
           # + аватар бота (branding/avatar-640.png) — для @BotFather /setuserpic.
-          ASSETS="tg-bot-control/BotControl-debug.apk $(ls tg-bot-control/*-ready.py tg-bot-control/branding/avatar-*.png handoff/*.txt 2>/dev/null | tr '\n' ' ')"
+          ASSETS="tg-bot-control/BotControl-debug.apk $(ls tg-bot-control/*-ready.py tg-bot-control/branding/avatar-*.png handoff/*.txt docs/presentation.pdf docs/presentation.html 2>/dev/null | tr '\n' ' ')"
           {
             echo
             echo "## Прямые ссылки на скачивание"
@@ -132,9 +129,16 @@ jobs:
           } >> "$NOTES"
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" $ASSETS --clobber
-            gh release edit "$TAG" --notes-file "$NOTES" --prerelease
+            gh release edit "$TAG" --notes-file "$NOTES" --prerelease=false --latest
           else
+            # Тег — коммит с APK внутри (как в рецепте handoff/02-build-release.txt:
+            # git fetch тега + git show). Живой APK в ветки не попадает.
+            git add -f tg-bot-control/BotControl-debug.apk
+            git -c user.name="botcontrol-ci" -c user.email="botcontrol-ci@users.noreply.github.com" \
+              commit --no-verify -m "BotControl v${VN} (code ${VC}) — APK из ${GITHUB_SHA::7}"
+            git tag -f "$TAG"
+            git push --force origin "refs/tags/$TAG"
             gh release create "$TAG" $ASSETS \
-              --prerelease --title "BotControl v${VN} (code ${VC})" --notes-file "$NOTES"
+              --latest --title "BotControl v${VN} (code ${VC})" --notes-file "$NOTES"
           fi
           echo "::notice title=release::${TAG}"

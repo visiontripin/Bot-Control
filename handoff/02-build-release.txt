@@ -1,19 +1,20 @@
-BotControl — СБОРКА APK, ПРОВЕРКА, РЕЛИЗ И ССЫЛКИ (рабочий рецепт, проверен на v1.6.3–v1.6.5)
+BotControl — СБОРКА APK, ПРОВЕРКА, РЕЛИЗ И ССЫЛКИ (рабочий рецепт, проверен на v1.6.3–v1.7.3)
 ============================================================================================
 
 ПОЧЕМУ В CI: в песочнице агента закрыты dl.google.com, maven.google.com, Maven
 Central и services.gradle.org, поэтому Android SDK и Gradle-зависимости не
 скачать. APK собирает GitHub Actions:
-  .github/workflows/botcontrol-apk.yml     — сборка, aapt, артефакт; при [apk] ещё тег и pre-release
-  .github/workflows/botcontrol-attach.yml  — прикладывает *-ready.py и handoff/*.txt к текущему релизу
+  .github/workflows/botcontrol-apk.yml     — проверки, сборка, aapt, артефакт; при [apk] ещё тег и релиз (/releases/latest)
+  .github/workflows/botcontrol-attach.yml  — прикладывает *-ready.py, handoff/*.txt и docs/presentation.* к текущему релизу
                                              без пересборки (при изменении этих файлов)
+  .github/workflows/botcontrol-windows.yml — тесты desktop-web + сборка BotControl.exe (Windows)
 Триггер: push в ветки "arena/**" и "main" (paths: tg-bot-control/android/** или сам workflow).
 Изменение файла workflow само запускает сборку (без [apk] — только артефакт, без релиза).
 
 ------------------------------------------------------------------
 ШАГ 0. Рабочая копия актуальна (её иногда молча сбрасывает до «Initial commit»!)
 ------------------------------------------------------------------
-  cd /home/user/oracle && git log --oneline -1
+  cd /home/user/Bot-Control && git log --oneline -1
   # если видишь «Initial commit» или чужой HEAD:
   git fetch origin <твоя-ветка> && git reset --hard FETCH_HEAD && git clean -fd
   Пушь промежуточные результаты почаще, чтобы сброс не съел работу.
@@ -22,15 +23,18 @@ Central и services.gradle.org, поэтому Android SDK и Gradle-завис�
 ШАГ 1. Версия (СНАЧАЛА)
 ------------------------------------------------------------------
   tg-bot-control/android/app/build.gradle.kts:
-      versionCode = 33          # текущий 32 → следующий 33
-      versionName = "1.6.6"
+      versionCode = 37          # текущий 36 → следующий 37
+      versionName = "1.7.4"          # текущий 1.7.3 → следующий 1.7.4
 
 ------------------------------------------------------------------
 ШАГ 2. Локальные проверки перед пушем (Android-компилятора нет!)
 ------------------------------------------------------------------
-  a) Изоляция ботов (то же делает CI перед сборкой):
+  a) Проверки безопасности и изоляции ботов (то же делает CI перед сборкой):
+       python3 tg-bot-control/tools/check-no-tokens.py
        python3 tg-bot-control/tools/check-bot-isolation.py
-  b) Kotlin-харнесс: импортёр, экспортёр и тест изоляции без Android SDK
+  b) Веб-редактор / Windows (desktop-web):
+       (cd tg-bot-control/desktop-web && python3 -m unittest test_server -v && node test-generated.js)
+  c) Kotlin-харнесс: импортёр, экспортёр и тест изоляции без Android SDK
      (JDK и kotlinc берутся из PyPI):
        python3 -m venv /tmp/ktenv && /tmp/ktenv/bin/pip install -q jdk4py==21.0.8.2 kotlin-jupyter-kernel
        cd tg-bot-control/tools/kotlin-harness
@@ -40,15 +44,15 @@ Central и services.gradle.org, поэтому Android SDK и Gradle-завис�
                $SRC/SettingsExporter.kt stubs/*.kt stubs2/*.kt src/Dump.kt src/RoundTrip.kt
        for f in ../../*-ready.py ../import-fixtures/*.py; do
          echo "$(basename $f): $(./run.sh /tmp/kout RoundTripKt $f | grep ^ROUNDTRIP)"; done
-       # ожидается ROUNDTRIP OK у всех 11 файлов
-  c) UI и service-код (Compose, Android API) проверяет только сборка в CI.
+       # ожидается ROUNDTRIP OK у всех файлов
+  d) UI и service-код (Compose, Android API) проверяет только сборка в CI.
      Вычитывай импорты. Удобно делать промежуточный коммит БЕЗ [apk]: CI
      соберёт артефакт, и так видно, компилируется ли код.
 
 ------------------------------------------------------------------
 ШАГ 3. Коммит с [apk] и пуш
 ------------------------------------------------------------------
-  git add -A && git commit -m "v1.6.6 (code 33) [apk]: что сделано"
+  git add -A && git commit -m "v1.7.4 (code 37) [apk]: что сделано"
   git push origin <твоя-ветка>
   git ls-remote origin <твоя-ветка>        # убедиться, что пуш дошёл
 
@@ -61,19 +65,19 @@ Central и services.gradle.org, поэтому Android SDK и Gradle-завис�
   # шаги:        gh run view $RID --json jobs -q '.jobs[].steps[] | .name+" → "+.conclusion'
   # аннотации (строка aapt, тег релиза, ошибки сборки «e: …»):
   JOB=$(gh run view $RID --json jobs -q '.jobs[0].databaseId')
-  gh api repos/visiontripin/oracle/check-runs/$JOB/annotations -q '.[] | .title+": "+.message'
-  Ожидаемо: «aapt: package: name='com.botcontrol.admin.debug' versionCode='33' versionName='1.6.6'
-  … | sha256=… | cert-sha256=2ecc9b73…e51e20d5e» и «release: botcontrol-v1.6.6-code33».
+  gh api repos/visiontripin/Bot-Control/check-runs/$JOB/annotations -q '.[] | .title+": "+.message'
+  Ожидаемо: «aapt: package: name='com.botcontrol.admin.debug' versionCode='37' versionName='1.7.4'
+  … | sha256=… | cert-sha256=2ecc9b73…e51e20d5e» и «release: botcontrol-v1.7.4-code37».
   Если сборка упала: ошибки Kotlin есть в той же аннотации (шаг «Build errors → annotation»).
 
 ------------------------------------------------------------------
 ШАГ 5. Забрать APK и проверить (release-assets из песочницы НЕ скачиваются)
 ------------------------------------------------------------------
   # gh release download / gh run download / curl ассетов падают. Работает только git:
-  git fetch origin refs/tags/botcontrol-v1.6.6-code33
+  git fetch origin refs/tags/botcontrol-v1.7.4-code37
   git show FETCH_HEAD:tg-bot-control/BotControl-debug.apk > /tmp/app.apk
   sha256sum /tmp/app.apk                    # = sha256 из аннотации aapt
-  gh release view botcontrol-v1.6.6-code33 --json assets -q '.assets[].name'
+  gh release view botcontrol-v1.7.4-code37 --json assets,isPrerelease,isLatest
 
   # Сертификат подписи (APK Signature Scheme v2) — должен совпасть с эталоном:
 python3 - <<'EOF'
@@ -105,18 +109,20 @@ EOF
   • README.md (корень): «Текущая доставка» и следующий versionCode.
   • Коммит «docs: vX доставлен» (без [apk]) и пуш.
   • Сводка пользователю на русском, с прямыми ссылками:
-      https://github.com/visiontripin/oracle/releases/download/botcontrol-v1.6.6-code33/BotControl-debug.apk
-      https://github.com/visiontripin/oracle/releases/download/botcontrol-v1.6.6-code33/presentation-bot-ready.py
+      https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk
+      https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-v1.7.4-code37/BotControl-debug.apk
+      https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-v1.7.4-code37/presentation-bot-ready.py
       (и другие нужные *-ready.py, avatar-640.png, *.txt)
 
 ------------------------------------------------------------------
 PR И GITHUB
 ------------------------------------------------------------------
-  • PR #1: https://github.com/visiontripin/oracle/pull/1 (ветка arena/01a0d2d9-oracle → main).
-  • `gh pr edit` падает (ошибка GraphQL «Projects (classic) deprecated»). Правь через REST:
-      gh api -X PATCH repos/visiontripin/oracle/pulls/1 -f title="…" -F body=@/tmp/body.md
-  • GitHub Pages через API недоступен (403). Pages включает пользователь:
-    Settings → Pages → main, папка /docs.
+  • GitHub Pages отдаёт docs/index.html, docs/presentation.html, docs/presentation.pdf и docs/matrix-links.html —
+    прямые ссылки для пользователя:
+      https://visiontripin.github.io/Bot-Control/
+      https://visiontripin.github.io/Bot-Control/presentation.html
+      https://visiontripin.github.io/Bot-Control/presentation.pdf
+      https://visiontripin.github.io/Bot-Control/matrix-links.html
   • raw.githubusercontent.com из песочницы недоступен. Файлы из репозитория читай так:
-      gh api "repos/visiontripin/oracle/contents/<путь>?ref=<ветка|тег>" -q .content | base64 -d
+      gh api "repos/visiontripin/Bot-Control/contents/<путь>?ref=<ветка|тег>" -q .content | base64 -d
   • В CI есть предупреждения про Node 20 и setup-java@v4. Сборку они не ломают.

@@ -27,11 +27,11 @@ cd tools/kotlin-harness
 
 SRC=../../android/app/src/main/java/com/botcontrol/admin/data
 
-./kc.sh out $SRC/PySource.kt $SRC/ScriptImporter.kt $SRC/BotExtras.kt \
+./kc.sh out $SRC/PySource.kt $SRC/ScriptImporter.kt $SRC/BotExtras.kt $SRC/Anim.kt \
             $SRC/SettingsExporter.kt stubs/*.kt stubs2/*.kt src/Dump.kt
 
 ./run.sh out DumpKt ../import-fixtures/perkur-bot-oracle.py
-./run.sh out DumpKt ../../bot-config-ready.py
+./run.sh out DumpKt ../../smith-bot-ready.py
 ```
 
 `Dump.kt` печатает: промпт, ИИ-параметры, уточняющие вопросы, наборы,

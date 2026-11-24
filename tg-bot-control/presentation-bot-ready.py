@@ -14,7 +14,8 @@
 #   • «▶️ Автотур» — все 8 слайдов сами по очереди;
 #   • демо-команды «фишек»: /progress /matrix /slot /typewriter /countdown
 #     /spinner /quest /dice /howto /links /help;
-#   • кнопки-ссылки: GitHub и страница релизов (скачать APK).
+#   • кнопки-ссылки: GitHub, страница релизов (скачать APK) и презентация
+#     (docs/presentation.html + PDF на GitHub Pages).
 #
 # Слайды лежат в репозитории (tg-bot-control/branding/slides), ссылки
 # закреплены за тегом релиза — картинки не поменяются «под ногами».
@@ -30,8 +31,12 @@ from telebot.types import (BotCommand, InlineKeyboardButton, InlineKeyboardMarku
 BOT_TOKEN = "ВСТАВЬ_ТОКЕН_НЕ_ИМПОРТИРУЕТСЯ"  # в приложении токен уже есть
 bot = telebot.TeleBot(BOT_TOKEN)
 
-GITHUB_URL = "https://github.com/visiontripin/oracle"
-RELEASES_URL = "https://github.com/visiontripin/oracle/releases"
+GITHUB_URL = "https://github.com/visiontripin/Bot-Control"
+RELEASES_URL = "https://github.com/visiontripin/Bot-Control/releases"
+LATEST_APK_URL = "https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk"
+# Презентация на GitHub Pages (Settings → Pages → main, папка /docs)
+PRESENTATION_URL = "https://visiontripin.github.io/Bot-Control/presentation.html"
+PRESENTATION_PDF = "https://visiontripin.github.io/Bot-Control/presentation.pdf"
 
 
 # ---------- анимация: одно сообщение правится кадр за кадром ----------
@@ -104,7 +109,7 @@ def play_animation(chat_id, frames, delay=0.7, final=None, reply_markup=None,
 
 # ---------- слайды ----------
 SLIDE_COVER = [
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/01-cover.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/01-cover.png\n"
     "🤖 BotControl — Telegram-боты прямо с телефона.\n\n"
     "Без сервера и VPS: бот живёт в приложении на Android. "
     "Команды, кнопки, расписание, анимации, ИИ на устройстве.\n\n"
@@ -112,17 +117,17 @@ SLIDE_COVER = [
 ]
 
 SLIDE_RULES = [
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/02-rules.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/02-rules.png\n"
     "🧩 Команды и кнопки\n\n"
     "• Правило: команда, фраза или кнопка → ответ.\n"
     "• Ответ: текст, набор фраз (случайный), скрипт JS, анимация или ИИ.\n"
     "• Inline-кнопки: всплывашки, ссылки, правка сообщения на месте — как в этом меню.\n"
-    "• Клавиатура чата и меню команд — тоже кнопками.\n\n"
-    "Где: приложение → бот → «Правила».",
+    "• Клавиатура и действия кнопок — в одном месте, плюс меню команд.\n\n"
+    "Где: приложение → бот → «Правила» и «Кнопки».",
 ]
 
 SLIDE_ANIM = [
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/03-anim.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/03-anim.png\n"
     "🎞 Анимации\n\n"
     "Сообщение оживает кадр за кадром — бот правит его сам.\n"
     "• 10 эффектов: прогресс, спиннер, точки, отсчёт, печатная машинка, Матрица, слот, луна, часы, сердце.\n"
@@ -132,17 +137,17 @@ SLIDE_ANIM = [
 ]
 
 SLIDE_SCHEDULE = [
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/04-schedule.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/04-schedule.png\n"
     "⏰ Расписание\n\n"
     "• Напоминания по дням недели: будни, пятница, выходные — своё время.\n"
     "• Под напоминанием — кнопки с ответами.\n"
     "• «Запуск / Стоп» — кнопками прямо в Telegram.\n"
-    "• Посты в канал по расписанию.\n\n"
+    "• Автозапуск после перезагрузки и посты в канал по расписанию.\n\n"
     "Где: бот → «Расписание».",
 ]
 
 SLIDE_IMPORT = [
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/05-import.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/05-import.png\n"
     "📥 Импорт и экспорт\n\n"
     "• Вставь код бота на Python (telebot / aiogram) — приложение разложит его по правилам, кнопкам и расписанию.\n"
     "• Экспорт обратно в рабочий .py.\n"
@@ -151,7 +156,7 @@ SLIDE_IMPORT = [
 ]
 
 SLIDE_AI = [
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/06-ai.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/06-ai.png\n"
     "🧠 ИИ на устройстве\n\n"
     "• Локальная модель прямо в телефоне — никакого облака.\n"
     "• Включается только по сценарию: /chat или правило с действием «ИИ».\n"
@@ -160,7 +165,7 @@ SLIDE_AI = [
 ]
 
 SLIDE_LISTINGS = [
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/07-listings.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/07-listings.png\n"
     "📢 Объявления и канал\n\n"
     "• Визард: описание → контакт → фото → предпросмотр → пост в канал.\n"
     "• «Мои объявления»: поднять, удалить.\n"
@@ -169,9 +174,9 @@ SLIDE_LISTINGS = [
 ]
 
 SLIDE_HOWTO = [
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/08-start.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/08-start.png\n"
     "🚀 Как начать\n\n"
-    "1. Скачай APK — кнопка «⬇️ Скачать APK» ниже.\n"
+    "1. Скачай APK — кнопка «⬇️ Скачать APK» ниже (или BotControl.exe для ПК).\n"
     "2. @BotFather → /newbot → скопируй токен.\n"
     "3. Приложение → «+ Добавить бота» → вставь токен.\n"
     "4. Настрой правила, импортируй код или сгенерируй его промтом.\n"
@@ -180,7 +185,7 @@ SLIDE_HOWTO = [
 
 # /start: обложка, подпись «грузится», затем меню
 INTRO_FRAMES = [
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/01-cover.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/01-cover.png\n"
     "Загружаю презентацию…\n▰▱▱▱▱▱▱▱▱▱ 10%",
     "Загружаю презентацию…\n▰▰▰▰▱▱▱▱▱▱ 40%",
     "Загружаю презентацию…\n▰▰▰▰▰▰▰▱▱▱ 70%",
@@ -189,21 +194,21 @@ INTRO_FRAMES = [
 
 # «▶️ Автотур»: все слайды по очереди
 TOUR_FRAMES = [
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/01-cover.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/01-cover.png\n"
     "▶️ Автотур · 1/8 · BotControl",
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/02-rules.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/02-rules.png\n"
     "▶️ Автотур · 2/8 · Команды и кнопки",
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/03-anim.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/03-anim.png\n"
     "▶️ Автотур · 3/8 · Анимации",
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/04-schedule.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/04-schedule.png\n"
     "▶️ Автотур · 4/8 · Расписание",
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/05-import.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/05-import.png\n"
     "▶️ Автотур · 5/8 · Импорт и экспорт",
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/06-ai.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/06-ai.png\n"
     "▶️ Автотур · 6/8 · ИИ на устройстве",
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/07-listings.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/07-listings.png\n"
     "▶️ Автотур · 7/8 · Объявления и канал",
-    "photo: https://raw.githubusercontent.com/visiontripin/oracle/botcontrol-v1.6.2-code29/tg-bot-control/branding/slides/08-start.png\n"
+    "photo: https://raw.githubusercontent.com/visiontripin/Bot-Control/botcontrol-v1.7.3-code36/tg-bot-control/branding/slides/08-start.png\n"
     "▶️ Автотур · 8/8 · Как начать",
 ]
 
@@ -246,15 +251,20 @@ def main_menu():
     kb.row(InlineKeyboardButton("🎲 Кубик", callback_data="p_dice"),
            InlineKeyboardButton("🏠 В начало", callback_data="p_home"))
     kb.row(InlineKeyboardButton("⭐ GitHub", url=GITHUB_URL),
-           InlineKeyboardButton("⬇️ Скачать APK", url=RELEASES_URL))
+           InlineKeyboardButton("⬇️ Скачать APK", url=LATEST_APK_URL))
+    kb.row(InlineKeyboardButton("📊 Презентация", url=PRESENTATION_URL),
+           InlineKeyboardButton("📄 PDF", url=PRESENTATION_PDF))
     return kb
 
 
 def links_menu():
     kb = InlineKeyboardMarkup()
     kb.row(InlineKeyboardButton("⭐ GitHub", url=GITHUB_URL))
-    kb.row(InlineKeyboardButton("⬇️ Релизы / APK", url=RELEASES_URL))
-    kb.row(InlineKeyboardButton("📘 README", url="https://github.com/visiontripin/oracle/tree/main/tg-bot-control"))
+    kb.row(InlineKeyboardButton("⬇️ Скачать APK", url=LATEST_APK_URL),
+           InlineKeyboardButton("📦 Все релизы", url=RELEASES_URL))
+    kb.row(InlineKeyboardButton("📘 README", url="https://github.com/visiontripin/Bot-Control/tree/main/tg-bot-control"))
+    kb.row(InlineKeyboardButton("📊 Презентация (слайды)", url=PRESENTATION_URL))
+    kb.row(InlineKeyboardButton("📄 Презентация (PDF)", url=PRESENTATION_PDF))
     return kb
 
 
@@ -282,7 +292,7 @@ def cmd_help(msg):
                      "/start — обложка и меню разделов\n"
                      "/tour — автотур по всем слайдам\n"
                      "/howto — как запустить своего бота\n"
-                     "/links — GitHub и скачивание APK\n\n"
+                     "/links — GitHub, APK и презентация\n\n"
                      "🎞 Анимации:\n"
                      "/progress — прогресс-бар\n"
                      "/spinner — спиннер\n"
@@ -300,7 +310,8 @@ def cmd_links(msg):
     bot.send_message(msg.chat.id,
                      "🔗 BotControl — открытый проект.\n\n"
                      "Исходники, инструкции и готовые конфиги ботов — на GitHub. "
-                     "APK — на странице релизов (самый верхний релиз — свежий).",
+                     "APK качается напрямую по кнопке ниже или со страницы релизов (там же есть версия для Windows).\n"
+                     "📊 Презентация — слайдами в браузере или файлом PDF.",
                      reply_markup=links_menu())
 
 

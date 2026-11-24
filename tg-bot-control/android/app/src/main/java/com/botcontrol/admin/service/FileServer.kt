@@ -110,7 +110,7 @@ class FileServer(context: Context) : NanoHTTPD(PORT) {
         }
         sb.append("<p><button class='btn' type='submit'>Загрузить</button></p></form>")
         sb.append("<footer>BotControl — Telegram-боты прямо с телефона · ")
-        sb.append("<a href='${Brand.GITHUB_URL}' target='_blank' rel='noopener'>github.com/visiontripin/oracle</a> · ")
+        sb.append("<a href='${Brand.GITHUB_URL}' target='_blank' rel='noopener'>github.com/visiontripin/Bot-Control</a> · ")
         sb.append("<a href='${Brand.DEMO_BOT_URL}' target='_blank' rel='noopener'>@${Brand.DEMO_BOT}</a></footer>")
         sb.append("</main></body></html>")
 
