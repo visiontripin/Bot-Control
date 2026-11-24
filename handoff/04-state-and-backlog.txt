@@ -3,7 +3,8 @@ BotControl — СОСТОЯНИЕ, КАРТА ФАЙЛОВ, ОТКРЫТЫЕ З�
 
 ВЕРСИЯ
 ------
-  v1.7.3 (versionCode 36). Тег: botcontrol-v1.7.3-code36.
+  v1.7.3 (versionCode 36). Тег: botcontrol-v1.7.3-code36 (CI run 45334313070).
+  sha256:  926f841487c69424444f6cbff66168bc3bb8efb796737eb7c8c162fad3248ef9 (97 955 783 байт)
   APK (постоянная ссылка на последний релиз):
            https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk
   APK (тег):

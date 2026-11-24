@@ -86,9 +86,12 @@ Android, `botcontrol-windows.yml` — Windows, `botcontrol-attach.yml` —
 Android SDK 35; для `desktop-web/` достаточно Python 3.9+.
 
 - **Текущая версия Android:** **v1.7.3 (versionCode 36)**, тег
-  `botcontrol-v1.7.3-code36`, следующий versionCode — **37**.
+  `botcontrol-v1.7.3-code36`, sha256
+  `926f841487c69424444f6cbff66168bc3bb8efb796737eb7c8c162fad3248ef9`,
+  следующий versionCode — **37**.
 - **Текущее превью Windows:** **0.6.0**, тег
-  `botcontrol-windows-preview-0.6.0`.
+  `botcontrol-windows-preview-0.6.0`, sha256
+  `bcf3138b7d56c6f5dd26701d37423791fcd476c255641d9944814753d75085d3`.
 
 ## Безопасность
 
