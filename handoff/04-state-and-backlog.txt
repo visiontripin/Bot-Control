@@ -1,60 +1,52 @@
-BotControl — СОСТОЯНИЕ, КАРТА ФАЙЛОВ, ОТКРЫТЫЕ ЗАДАЧИ (на момент v1.7.5)
+BotControl — СОСТОЯНИЕ, КАРТА ФАЙЛОВ, ОТКРЫТЫЕ ЗАДАЧИ (на момент v2.2.0)
 ======================================================================
 
 ВЕРСИЯ
 ------
-  v1.7.5 (versionCode 38). Тег: botcontrol-v1.7.5-code38 (CI run 46140962885).
-  sha256:  d8698e3fa45936842b6e658bc9242041feae54fdc568e3881b21b6579bfb236d (97 988 551 байт)
+  v2.2.0 (versionCode 43). Тег: botcontrol-v2.2.0-code43.
+  sha256:  6bf22f637ac4bddb4245bfd23bff720fee76d9c97241c2b2a9630f52c1c425c0 (98 775 656 байт)
   APK (постоянная ссылка на последний релиз):
            https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk
   APK (тег):
-           https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-v1.7.5-code38/BotControl-debug.apk
+           https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-v2.2.0-code43/BotControl-debug.apk
   cert:    2ecc9b73dd43d0b40cd032c3e83d2e7f4a549680d513a10b7ed5510e51e20d5e
   Пакет:   com.botcontrol.admin.debug (debug-сборка, ставится поверх, боты сохраняются)
-  Windows: BotControl.exe 0.6.0, тег botcontrol-windows-preview-0.6.0,
-           sha256 bcf3138b7d56c6f5dd26701d37423791fcd476c255641d9944814753d75085d3
-           https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.6.0/BotControl.exe
-  СЛЕДУЮЩАЯ: versionCode 39.
+  Windows: BotControl.exe 0.7.0, тег botcontrol-windows-preview-0.7.0,
+           sha256 149aa278a59dd2c5667f5d32e6b2bb7479af43b69777f (8 866 269 байт)
+           https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.7.0/BotControl.exe
+  СЛЕДУЮЩАЯ: versionCode 44.
 
 ИСТОРИЯ ПОСЛЕДНИХ ВЕРСИЙ (подробно — tg-bot-control/RELEASE-NOTES.md)
-  1.6.3  изоляция ботов: уточняющие вопросы, запасной ответ и кулдаун по botId;
-         владелец наборов; метка [@бот] в журнале; подтверждение удалений;
-         CI-страж; уборка репозитория
-  1.6.4  параметры ИИ своего бота на каждый запрос; метки в строках экранов
-  1.6.5  версия приложения в строке «🚀 Бот запущен»
-  1.7.0  уборка репозитория (сервер, дубли конфигов), HTML-презентация и PDF,
-         серверный режим убран из интерфейса приложения
-  1.7.1  конструктор кнопок клавиатуры и действий в одном диалоге (ButtonsScreen),
-         локальный веб-редактор tg-bot-control/desktop-web/ и поддержка Termux
-  1.7.2  исправления по итогам тестирования (РЕЦЕНЗИЯ-ТЕСТИРОВАНИЕ.md и
-         СПИСОК-ИСПРАВЛЕНИЙ.md): Windows W1–W8 (потеря сообщений, замок
-         остановки, localhost, честные ошибки, фразы по словам, окно допуска
-         напоминаний, /chatid, импорт без кадров, «Перезапустить», exe 0.6.0);
-         Android A2/A3/A6/A8 (автозапуск, батарея, параметры ИИ LiteRT-LM,
-         поделиться журналом); CI-скан живых токенов (check-no-tokens.py)
-  1.7.3  единое объединение всех веток в main, обновление ссылок на
-         visiontripin/Bot-Control, прямых ссылок скачивания, презентации и
-         GitHub Pages, релизы Android без --prerelease (/releases/latest работает)
-  1.7.4  исправление Telegram HTTP 429 (Too Many Requests) в Android и
-         desktop-web/: чтение retry_after и Retry-After (TelegramRateLimit),
-         per-token кулдаун, per-botId отмена Job/Mutex в LocalBotService,
-         защита от дублей токенов и лишних вызовов setMyCommands/deleteWebhook
-  1.7.5  нативное распознавание play_animation(...) без def, резолв наборов
-         из библиотеки бота (I-2), учёт пропущенных правил rulesSkipped (I-3),
-         предупреждения при обрезках лимитов (I-5), ротация « | » для личных
-         напоминаний (U-1), лог AnimPlayer (U-5), гайд v1.7.5 и фикстуры D-10
+  1.7.4–1.7.5  HTTP 429 retry_after, нативный play_animation, резолв наборов,
+         rulesSkipped, предупреждения обрезки I-5, ротация « | », гайд LLM
+  1.8.0  Этап 1: вложенные inline-подменю до 3 уровней, copy_text/web_app/
+         switch_inline, regex и wholeWord, HTML/MarkdownV2, опросы send_poll,
+         медиа по file_id/URL, ShuffleBag, ScheduleJitter, KeyboardOptions
+  1.9.0  Этап 2: Room db для JS Rhino, конструктор анкет FSM, CRM подписчиков
+         и ролей (user/vip/admin), проверка подписки, рассылки, разовые даты
+  2.0.0  Этап 3: группы/каналы/форумы (11 allowed_updates), приветствие,
+         кнопка-капча, антиспам/антифлуд, авто-заявки, реакции, Webhook
+  2.1.0  Этап 4: Inline-режим @бот, Telegram Stars (XTR), встроенный Mini App
+         (/miniapp/<botId>), http.get/post по allowlist, входящие медиа в JS/ИИ
+  2.2.0  Этап 5 + Windows 0.7.0: дисковый MultiBot .bc (10 бэкапов), полный
+         импорт/экспорт .py ↔ .bc, network_security_config (HTTPS-only),
+         6-значный PIN Wi-Fi сервера (:8090), Rhino watchdog 2 с,
+         🩺 Диагностика, shared-telegram-mock, verify-release.sh,
+         демо-бот showcase-all-ready.py и обновлённый presentation-bot-ready.py
 
-БОТЫ ПОЛЬЗОВАТЕЛЯ (живут на его телефоне; токенов в git НЕТ)
+БОТЫ И КОНФИГИ
   @AppBotcontrol_bot     — бот-презентация (tg-bot-control/presentation-bot-ready.py)
-  @Daromvpl_bot          — бот объявлений «Даром в ПЛ» (режим «Объявления», канал @daromvpl)
-  @OneDope_bot           — небольшой бот (2 правила)
-  «Агент Смит / перекур» — smith-bot-ready.py (оракл-бот, характер ИИ + шутки)
+  showcase-all-ready.py  — полный демо-бот всех функций v2.2.0 / 0.7.0
+  @Daromvpl_bot          — бот канала «Даром в ПЛ» (tg-bot-control/daromvpl-channel-ready.py)
+  «Агент Смит / перекур» — tg-bot-control/smith-bot-ready.py (оракл-бот)
 
 ССЫЛКИ
   Репозиторий       https://github.com/visiontripin/Bot-Control
   Релизы            https://github.com/visiontripin/Bot-Control/releases
   Последний APK     https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk
-  Windows EXE       https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.6.0/BotControl.exe
+  Windows EXE       https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.7.0/BotControl.exe
+  Демо всех фич     https://github.com/visiontripin/Bot-Control/releases/latest/download/showcase-all-ready.py
+  Презентация .py   https://github.com/visiontripin/Bot-Control/releases/latest/download/presentation-bot-ready.py
   Actions           https://github.com/visiontripin/Bot-Control/actions
   Страница проекта  https://visiontripin.github.io/Bot-Control/ (docs/index.html)
   Презентация       https://visiontripin.github.io/Bot-Control/presentation.html (+ presentation.pdf)
@@ -64,51 +56,41 @@ BotControl — СОСТОЯНИЕ, КАРТА ФАЙЛОВ, ОТКРЫТЫЕ З�
 КАРТА ФАЙЛОВ (корень репозитория)
   README.md                      индекс репозитория, прямые ссылки и текущая доставка
   handoff/*.txt                  эти инструкции (прикладываются к каждому релизу)
-  .github/workflows/             botcontrol-apk.yml (сборка APK/релиз),
-                                 botcontrol-attach.yml (файлы к релизу),
-                                 botcontrol-windows.yml (тесты и BotControl.exe)
-  docs/                          index.html (лендинг), presentation.html + presentation.pdf,
-                                 matrix-links.html (= task.txt), assets/
+  .github/workflows/             botcontrol-apk.yml, botcontrol-attach.yml, botcontrol-windows.yml
+  docs/                          index.html, presentation.html + pdf, matrix-links.html, assets/
   task.txt                       страница-хаб «Matrix Links» с неоновым логотипом (CRLF)
   tg-bot-control/
     ПЕРЕДАЧА-КОНТЕКСТА.md        память проекта (читать первым делом)
     RELEASE-NOTES.md             заметки к релизам
+    ДОРОЖНАЯ-КАРТА-TELEGRAM.md   5-этапная дорожная карта (выполнена в v1.8.0–v2.2.0)
     Инструкция-код-бота.md       как писать и править конфиги ботов, грамматика импорта
     Промт-создание-ботов.md      промт для генерации конфигов (он же есть в приложении)
     ГАЙД-СОЗДАНИЕ-БОТА-LLM.md    полный гайд и 2-фазный мастер-промт для создания ботов любой LLM
     РЕЦЕНЗИЯ-ТЕСТИРОВАНИЕ.md     QA-протокол тестирования Android + Windows
     СПИСОК-ИСПРАВЛЕНИЙ.md        реестр багов/улучшений (W1–W8, A2–A10, U-*, F-*)
-    *-ready.py                   готовые конфиги: smith, daromvpl-channel, presentation
-    desktop-web/                 локальный веб-редактор для Windows/Linux/Termux
+    *-ready.py                   готовые конфиги: showcase-all, presentation, smith, daromvpl-channel
+    desktop-web/                 локальный веб-редактор 0.7.0 для Windows/Linux/Termux
     branding/                    logo.svg (исходник), avatar-640.png, slides/, генераторы
+    tools/verify-release.sh      единая 5-гейтовая проверка релиза перед публикацией
     tools/check-bot-isolation.py CI-страж изоляции ботов
     tools/check-no-tokens.py     CI-страж от живых токенов в репозитории
-    tools/kotlin-harness/        компиляция импортёра и экспортёра без Android + isolation.sh
+    tools/shared-telegram-mock/  единый мок Bot API и контрактные фикстуры
+    tools/kotlin-harness/        компиляция импортёра и экспортёра без Android SDK + тесты этапов 1–5
     tools/import-fixtures/       конфиги-фикстуры для регрессии импорта
     android/app/src/main/java/com/botcontrol/admin/
-      data/     LocalBotStore (настройки по botId), BotRepository, BotExtras (модели),
-                ScriptImporter + PySource (импорт .py), SettingsExporter (экспорт .py),
-                Anim (спецификации анимаций), Brand (ссылки и логотип), telegram/TelegramApi
-      service/  LocalBotService (long polling, кнопки, планировщик), BootReceiver (автозапуск),
-                BotBrain (правила → сценарий → кулдаун → запасной ответ), AnimPlayer,
-                ListingEngine (объявления), BotLog (журнал с [@бот]), FileServer, LlmAgentService
+      data/     LocalBotStore (настройки по botId), BotRepository, BotExtras, local/* (Room v7+),
+                ScriptImporter + PySource, SettingsExporter, Anim, Brand, telegram/*
+      service/  LocalBotService, BootReceiver, BotBrain, BotDiagnostics, SafeHttpClient,
+                AnimPlayer, ListingEngine, FsmEngine, GroupModerationEngine, Stage4Engine,
+                BroadcastEngine, WebhookQueue, BotLog, FileServer, LlmAgentService
       llm/      DeviceLlm, LlmEngine, LitertLmEngine, MediaPipeEngine, ModelStore, DialogPrompt
-      ui/       screens/* (BotTreeScreen, ButtonsScreen, LocalBotScreen, FaqScreen, LogScreen…),
-                components/* (ConfirmDelete, AnimEditor, MenuEditor, BrandCard),
-                theme/, navigation/NavGraph
+      ui/       screens/*, components/*, theme/, navigation/NavGraph
 
 ОТКРЫТЫЕ ЗАДАЧИ ДЛЯ ПОЛЬЗОВАТЕЛЯ (напоминать)
-  1. Отозвать токен бота 8709443116 в @BotFather (/revoke): он остался в
-     истории git (удалённый botcontrol-handoff.zip).
-  2. Установить v1.7.5 (code 38) — включает нативный play_animation(...),
-     резолв наборов из библиотеки бота, учёт пропущенных правил,
-     предупреждения при обрезках лимитов и ротацию « | » в личных
-     напоминаниях (плюс защиту от HTTP 429 из v1.7.4).
+  1. Отозвать старый токен бота 8709443116 в @BotFather (/revoke): он остался в истории git.
+  2. На Android обновить приложение до v2.2.0 (code 43), на ПК — до BotControl.exe 0.7.0.
 
 ТЕХДОЛГ (по желанию, не поручено)
-  • Бэклог v1.8.0 / v1.9.0 из СПИСОК-ИСПРАВЛЕНИЙ.md: I-4 (вложенные
-    inline-меню), U-2 (shuffle-bag), U-3 (jitter расписания), U-4
-    (стикеры/GIF по file_id), U-6 (сводка ограничений).
   • Физически удалить архивные экраны серверного режима (Login, Dashboard,
     Plugins, PluginDetail, PluginEditor, Logs, Audit, Backup, Settings, Llm),
     data/remote/*, WebSocketManager, LanScanner, worker/StatusWorker и
@@ -116,21 +98,4 @@ BotControl — СОСТОЯНИЕ, КАРТА ФАЙЛОВ, ОТКРЫТЫЕ З�
   • CI: обновить actions до версий на Node 24 (setup-java@v5 и т. д.).
   • LiteRT-LM не применяет температуру и top-K бота на каждый запрос:
     нет проверенного API сэмплера.
-  • U-A1..U-A5 и U-W1..U-W9 из СПИСОК-ИСПРАВЛЕНИЙ.md (release-подпись, мастер
-    первого запуска, мультиботы и хранение на диске в desktop-web).
-
-ИДЕИ (перенесено из удалённого Фичи-даромвпл.md; не поручено)
-  Бот объявлений:
-  • настоящий медиаальбом (sendMediaGroup) при публикации объявлений;
-  • редактирование фото в визарде и валидация шагов визарда;
-  • мини-БД объявлений per-bot: сохранить / мои / переопубликовать / удалить;
-  • плейсхолдеры {chat_id} и {username} в текстах — вернёт /myid и подпись автора;
-  • пошаговые визарды в правилах (цепочка «вопрос → ответ» с корзиной данных);
-  • роль «админ бота»: уведомления админу со ссылками (deeplink) и кнопкой
-    «Удалить из канала»;
-  • лимит публикаций на пользователя, маска телефона в визардах;
-  • статистика по пользователям и модерация владельцем.
-  Приложение и бренд:
-  • вариант аватара и слайдов в матрично-неоновом стиле, как на странице
-    Matrix Links (пользователь намекал; не подтверждено);
-  • новые слайды презентации по мере роста возможностей.
+  • При перегенерации docs/presentation.pdf в будущем — обновить PDF из docs/presentation.html.

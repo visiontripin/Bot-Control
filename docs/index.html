@@ -131,14 +131,14 @@
 <div class="hero">
   <div class="wrap">
     <div>
-      <span class="badge"><i></i> Android 1.7.3 + Windows · открытый проект</span>
+      <span class="badge"><i></i> Android 2.2.0 + Windows 0.7.0 · открытый проект</span>
       <h1>Telegram-боты<br><span>прямо с телефона</span></h1>
-      <p class="lead">Без сервера и VPS: бот живёт в приложении. Команды, кнопки, расписание,
-        анимации и ИИ на устройстве — всё настраивается кнопками и списками.</p>
+      <p class="lead">Без сервера и VPS: бот живёт в приложении. Команды, 3-уровневые меню,
+        анкеты FSM, группы и Stars, расписание, анимации и ИИ на устройстве.</p>
       <div class="cta">
         <a class="btn" href="https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk" target="_blank" rel="noopener">⬇️ Скачать APK</a>
         <a class="btn gh" href="https://github.com/visiontripin/Bot-Control" target="_blank" rel="noopener">⭐ GitHub</a>
-        <a class="btn ghost" href="https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.6.0/BotControl.exe" target="_blank" rel="noopener">💻 Для Windows (.exe)</a>
+        <a class="btn ghost" href="https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.7.0/BotControl.exe" target="_blank" rel="noopener">💻 Для Windows (.exe)</a>
         <a class="btn ghost" href="https://t.me/AppBotcontrol_bot" target="_blank" rel="noopener">🤖 Демо-бот</a>
         <a class="btn ghost" href="presentation.html">📊 Презентация</a>
       </div>
@@ -179,22 +179,22 @@
     <div class="bar"></div>
     <p class="sub">Всё в одном приложении, у каждого бота свои настройки.</p>
     <div class="grid">
-      <div class="card"><div class="ic">🧩</div><h3>Команды и кнопки</h3>
-        <p>Команда, фраза или кнопка → ответ: текст, набор фраз, скрипт JS, анимация или ИИ. Конструктор клавиатуры и действий кнопок — в одном месте.</p></div>
-      <div class="card"><div class="ic">🎞</div><h3>Анимации</h3>
-        <p>10 эффектов (прогресс, спиннер, Матрица, слот-машина, отсчёт…), свои кадры и фото-квесты: бот сам правит сообщение.</p></div>
-      <div class="card"><div class="ic">⏰</div><h3>Расписание и автозапуск</h3>
-        <p>Напоминания по дням недели с кнопками, «Запуск / Стоп» в чате, посты в канал по времени и автозапуск после перезагрузки.</p></div>
-      <div class="card"><div class="ic">📥</div><h3>Импорт и экспорт кода</h3>
-        <p>Вставь бота на Python (telebot / aiogram), и приложение разложит его по настройкам. Экспорт обратно в рабочий <code>.py</code>.</p></div>
+      <div class="card"><div class="ic">🧩</div><h3>Команды, меню и JS</h3>
+        <p>Триггеры по команде, фразе и <code>regex</code>; 3-уровневые inline-подменю, опросы, кнопки <code>copy_text</code>/<code>web_app</code> и JS Rhino с памятью <code>db</code> + <code>http</code>.</p></div>
+      <div class="card"><div class="ic">🎞</div><h3>Анимации и медиа</h3>
+        <p>10 эффектов (прогресс, спиннер, Матрица, слот-машина, отсчёт…), свои кадры, фото-квесты, стикеры и кубики с учётом <code>HTTP 429</code>.</p></div>
+      <div class="card"><div class="ic">⏰</div><h3>Расписание и анкеты FSM</h3>
+        <p>Напоминания с зонами дней, разовыми датами и jitter, пошаговые анкеты FSM с ветвлениями, CRM ролей и массовые рассылки.</p></div>
+      <div class="card"><div class="ic">📥</div><h3>Единый импорт .py ↔ .bc</h3>
+        <p>Предпросмотр и разбор Python (telebot / aiogram) с заменой старых правил и обратным экспортом. Готовый конфиг всех фич — <code>showcase-all-ready.py</code>.</p></div>
       <div class="card"><div class="ic">🧠</div><h3>ИИ на устройстве</h3>
-        <p>Локальная модель, никакого облака. Включается только по сценарию: <code>/chat</code> или правило с действием «ИИ».</p></div>
-      <div class="card"><div class="ic">📢</div><h3>Объявления и канал</h3>
-        <p>Визард «описание → контакт → фото → пост», «Мои объявления», публикация в канал без дублей.</p></div>
-      <div class="card"><div class="ic">🔒</div><h3>Безопасность</h3>
-        <p>Токены — в зашифрованном хранилище Android Keystore, в экспорт и логи не попадают. Боты изолированы друг от друга.</p></div>
-      <div class="card"><div class="ic">💻</div><h3>Файлы по Wi-Fi и ПК</h3>
-        <p>Встроенный файловый сервер для картинок и скриптов + локальный веб-редактор <code>BotControl.exe</code> для Windows, Linux и Termux.</p></div>
+        <p>Локальная LLM (MediaPipe / LiteRT-LM), без облака. Включается только по сценарию, поддерживает входящие фото, документы и голосовые.</p></div>
+      <div class="card"><div class="ic">📢</div><h3>Группы, Stars и Mini Apps</h3>
+        <p>Капча, антиспам/антифлуд, темы форумов, объявления с альбомами, inline <code>@бот</code>, оплаты Telegram Stars (<code>XTR</code>) и Mini App.</p></div>
+      <div class="card"><div class="ic">🔒</div><h3>Безопасность v2.2.0</h3>
+        <p>Токены в Android Keystore, HTTPS-only, 6-значный PIN на Wi-Fi сервер, JS watchdog 2 с и <code>🩺 Диагностика</code> без токенов.</p></div>
+      <div class="card"><div class="ic">💻</div><h3>Windows BotControl.exe 0.7.0</h3>
+        <p>Локальный веб-редактор на 127.0.0.1:8765 без установки Python: мультиботы, <code>.bc</code> на диске, ротация 10 бэкапов и импорт Android <code>.py</code>.</p></div>
     </div>
   </div>
 </section>
@@ -205,19 +205,21 @@
       <div>
         <h2>Живое демо в Telegram</h2>
         <div class="bar"></div>
-        <p class="sub" style="margin-bottom:18px">Открой @AppBotcontrol_bot и нажми <b>/start</b>: слайды листаются кнопками,
-          анимации запускаются командами <code>/progress</code> <code>/matrix</code> <code>/slot</code> <code>/quest</code>.
-          Код этого бота лежит в релизе как <code>presentation-bot-ready.py</code>, его можно импортировать в своего бота.</p>
+        <p class="sub" style="margin-bottom:18px">Открой @AppBotcontrol_bot и нажми <b>/start</b>: слайды листаются в 3-уровневых меню,
+          обзор новинок — <code>/whatsnew</code> <code>/desktop</code> <code>/showcase</code> <code>/poll</code>,
+          анимации — <code>/progress</code> <code>/matrix</code> <code>/slot</code> <code>/quest</code>.
+          Коды ботов лежат в релизе: <code>presentation-bot-ready.py</code> и <code>showcase-all-ready.py</code>.</p>
         <div class="cta">
           <a class="btn" href="https://t.me/AppBotcontrol_bot" target="_blank" rel="noopener">🤖 Открыть бота</a>
-          <a class="btn ghost" href="https://github.com/visiontripin/Bot-Control/blob/main/tg-bot-control/presentation-bot-ready.py" target="_blank" rel="noopener">📄 Код бота</a>
+          <a class="btn ghost" href="https://github.com/visiontripin/Bot-Control/blob/main/tg-bot-control/presentation-bot-ready.py" target="_blank" rel="noopener">📄 Код презентации</a>
+          <a class="btn ghost" href="https://github.com/visiontripin/Bot-Control/releases/latest/download/showcase-all-ready.py" target="_blank" rel="noopener">🧩 Демо всех фич</a>
         </div>
       </div>
       <div class="chat" aria-hidden="true">
         <div class="msg out">/start</div>
-        <div class="msg in">👋 Привет! Это BotControl — Telegram-боты прямо с телефона. Листай разделы 👇</div>
-        <div class="kb"><span>🧩 Команды</span><span>🎞 Анимации</span><span>⏰ Расписание</span><span>📥 Импорт кода</span>
-          <span>▶️ Автотур</span><span>🚀 Как начать</span><span>⭐ GitHub</span><span>⬇️ Скачать APK</span></div>
+        <div class="msg in">👋 Привет! Это BotControl v2.2.0 + Windows 0.7.0. Листай разделы или открой «✨ Новое v2.2.0 ▸» 👇</div>
+        <div class="kb"><span>🧩 Команды</span><span>🎞 Анимации</span><span>⏰ Расписание и FSM</span><span>📥 Импорт .py/.bc</span>
+          <span>✨ Новое v2.2.0 ▸</span><span>▶️ Автотур</span><span>⬇️ Скачать APK</span><span>🔗 Ссылки и ПК ▸</span></div>
       </div>
     </div>
   </div>

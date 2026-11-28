@@ -15,8 +15,9 @@
   Рабочая ветка:      https://github.com/visiontripin/Bot-Control/tree/main
   Скачать APK:        https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk
   Все релизы:         https://github.com/visiontripin/Bot-Control/releases
-  Последний релиз:    https://github.com/visiontripin/Bot-Control/releases/tag/botcontrol-v1.7.3-code36
-  Windows (0.6.0):    https://github.com/visiontripin/Bot-Control/releases/tag/botcontrol-windows-preview-0.6.0
+  Последний релиз:    https://github.com/visiontripin/Bot-Control/releases/tag/botcontrol-v2.2.0-code43
+  Windows (0.7.0):    https://github.com/visiontripin/Bot-Control/releases/tag/botcontrol-windows-preview-0.7.0
+  Демо всех фич:      https://github.com/visiontripin/Bot-Control/releases/latest/download/showcase-all-ready.py
   Сайт и слайды:      https://visiontripin.github.io/Bot-Control/
   CI (Actions):       https://github.com/visiontripin/Bot-Control/actions
   Память проекта:     https://github.com/visiontripin/Bot-Control/blob/main/tg-bot-control/ПЕРЕДАЧА-КОНТЕКСТА.md
@@ -40,21 +41,23 @@
    стоит branches: ["arena/**", "main"]. Сборка APK запускается пушем в ветку,
    тег и релиз создаются, когда в сообщении коммита есть [apk].
 
-ТЕКУЩЕЕ СОСТОЯНИЕ: Android v1.7.3 (versionCode 36), тег botcontrol-v1.7.3-code36,
-и Windows BotControl.exe 0.6.0 (тег botcontrol-windows-preview-0.6.0).
+ТЕКУЩЕЕ СОСТОЯНИЕ: Android v2.2.0 (versionCode 43), тег botcontrol-v2.2.0-code43,
+и Windows BotControl.exe 0.7.0 (тег botcontrol-windows-preview-0.7.0).
   APK:  https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk
-  EXE:  https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.6.0/BotControl.exe
+  EXE:  https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.7.0/BotControl.exe
   Сертификат подписи (не должен меняться):
   2ecc9b73dd43d0b40cd032c3e83d2e7f4a549680d513a10b7ed5510e51e20d5e
-  СЛЕДУЮЩАЯ СБОРКА ANDROID: versionCode 37 (versionName 1.7.4 или 1.8.0 для крупной фичи).
+  СЛЕДУЮЩАЯ СБОРКА ANDROID: versionCode 44 (versionName 2.2.1 или 2.3.0 для крупной фичи).
 
-ЧТО УЖЕ СДЕЛАНО (v1.6.3–v1.7.3 + desktop-web 0.6.0):
-  • изоляция ботов + CI-проверки check-bot-isolation.py и check-no-tokens.py;
-  • скрыта серверная обвязка в основном Android-потоке, единый конструктор кнопок;
-  • автозапуск ботов после перезагрузки, кнопка исключения из оптимизации батареи;
-  • поиск/фильтр/экспорт журнала; честное отображение параметров LiteRT-LM;
-  • desktop-web / BotControl.exe 0.6.0 с исправлениями W1–W8, U-W4–U-W6;
-  • репозиторий, ссылки, презентация (HTML/PDF), сайт и релизная лента сведены в main.
+ЧТО УЖЕ СДЕЛАНО (v1.6.3–v2.2.0 + desktop-web 0.7.0, этапы 1–5):
+  • Этап 1 (v1.8.0): 3-уровневые inline-подменю, regex, HTML/MarkdownV2, опросы, медиа, copy_text/web_app, ShuffleBag и jitter;
+  • Этап 2 (v1.9.0): JS + SQLite Room db, анкеты FSM, CRM подписчиков, роли, рассылки и разовые даты;
+  • Этап 3 (v2.0.0): группы/форумы, кнопка-капча, антиспам/антифлуд, авто-заявки, реакции и локальный Webhook;
+  • Этап 4 (v2.1.0): Inline @бот, оплаты Telegram Stars (XTR), Mini Apps (/miniapp), http.get/post и входящие медиа;
+  • Этап 5 (v2.2.0 + desktop-web 0.7.0): паритет Windows (.bc на диске с 10 бэкапами, мультибот, полный .py ↔ .bc),
+    HTTPS-only (network_security_config), 6-значный PIN Wi-Fi сервера (:8090), watchdog Rhino 2 с, 🩺 Диагностика;
+  • готовые конфиги *-ready.py: showcase-all-ready.py (демо всех фич) и обновлённый presentation-bot-ready.py (@AppBotcontrol_bot);
+  • репозиторий, релизы, verify-release.sh, shared-telegram-mock и сайт сведены в main.
 
 ЖДУТ ОТ ВЛАДЕЛЬЦА (напомни, если ещё не сделано):
   • отозвать старый токен бота 8709443116 в @BotFather (/revoke): он остался в истории git.
@@ -77,4 +80,4 @@
 КОРОТКИЙ ВАРИАНТ (если контекст уже передан):
 Проект BotControl, git: https://github.com/visiontripin/Bot-Control (ветка main).
 Подтяни его, прочитай handoff/*.txt и tg-bot-control/ПЕРЕДАЧА-КОНТЕКСТА.md,
-продолжаем с v1.7.3 (следующий versionCode 37). Задача: [ОПИШИ ЗАДАЧУ]
+продолжаем с v2.2.0 (code 43, следующий versionCode 44). Задача: [ОПИШИ ЗАДАЧУ]
