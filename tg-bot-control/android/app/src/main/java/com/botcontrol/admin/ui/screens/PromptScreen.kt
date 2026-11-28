@@ -140,10 +140,11 @@ ANIM_ROCKET = [ "  🚀\n\n🌍", "\n  🚀\n🌍", "\n\n🌍🔥" ]      # св
    • Медиа и опросы: bot.send_sticker / send_animation / send_document / send_video / send_voice / send_audio (file_id или URL), bot.send_poll(chat_id, "Вопрос", ["Да", "Нет"]).
    • Клавиатура чата: ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True, input_field_placeholder="…"), request_contact=True, request_location=True, ReplyKeyboardRemove().
    • Меню команд: bot.set_my_commands([...], scope=BotCommandScopeAllGroupChats(), language_code="ru").
-13. ВОЗМОЖНОСТИ v1.9.0 (JS-память + интерфейс приложения):
+13. ВОЗМОЖНОСТИ v1.9.0–v2.0.0 (JS-память + группы, форумы и интерфейс приложения):
    • В JS-скриптах run_script("function handle(e) { ... }") доступна персистентная память db (сохраняется в SQLite Room между перезапусками): db.get(key, def?), db.set(key, val), db.del(key), db.incr(key, delta?), db.keys() — на пользователя; db.getGlobal/setGlobal/delGlobal/incrGlobal/globalKeys — общие для бота.
    • Пользовательские переменные {var} из пошаговых анкет (FSM) подставляются в тексты правил, кнопок и рассылок наряду с {user}, {username}, {user_id}, {chat_id}.
-   • Пошаговые анкеты (FSM), роли/админы/проверка подписки на канал, база подписчиков, массовые рассылки и разовые даты напоминаний настраиваются в UI приложения поверх импортированного конфига.
+   • Пошаговые анкеты (FSM), роли/админы/подписка на канал, база подписчиков, массовые рассылки и разовые даты настраиваются в UI приложения поверх импортированного конфига.
+   • Для групп/форумов/каналов (v2.0.0): опции правила поддерживают область чата (везде/ЛС/группы/каналы), автореакцию (emoji), message_thread_id (также в расписании; экспортируется в Python), а в разделе «Группы, каналы и модерация» настраиваются приветствие/кнопка-капча, антиспам (стоп-слова/ссылки/антифлуд), авто-приём заявок, реакции, опросы и Webhook-адаптер.
 
 ЗАДАНИЕ: создай бота:"""
 

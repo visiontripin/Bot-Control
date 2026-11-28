@@ -11,7 +11,7 @@
 |---|---|---|---|
 | **Этап 1** | **v1.8.0** | Ядро Telegram-механик: форматирование, опции отправки, медиа по `file_id`, `regex`/аргументы/плейсхолдеры, вложенные inline-меню (`I-4`), `web_app`/`copy_text`/`switch_inline`, `KeyboardOptions`/`ReplyKeyboardRemove`, `U-2`/`U-3`/`U-6` | ✅ **Выполнен (v1.8.0, code 39)** |
 | **Этап 2** | **v1.9.0** | Память, база подписчиков (`BotUserEntity`), персистентный JS `db` (`BotKvEntity`), пошаговые сценарии (`FsmEngine`), роли/админы/обязательная подписка, массовые рассылки (`BroadcastEngine`), разовые даты и альбомы объявлений | ✅ **Выполнен (v1.9.0, code 40)** |
-| **Этап 3** | **v2.0.0** | Группы, каналы, темы форумов, реакции, опросы и авто-модерация | 📋 Запланирован |
+| **Этап 3** | **v2.0.0** | Группы, каналы, темы форумов, реакции, опросы, авто-модерация (`GroupModerationEngine` + `GroupsScreen`) и Webhook-адаптер | ✅ **Выполнен (v2.0.0, code 41)** |
 | **Этап 4** | **v2.1.0** | Инлайн-режим `@bot`, Telegram Stars / платежи, Mini Apps (`web_app_data`) и внешние API | 📋 Запланирован |
 | **Этап 5** | **v2.2.0** | Полный паритет `desktop-web` (`BotControl.exe`), единый формат `.py` ↔ `.bc`, мастер запуска и техдолг | 📋 Запланирован |
 
@@ -71,15 +71,18 @@
 
 ---
 
-## Этап 3 (v2.0.0) — «Группы, каналы, форумы и авто-модерация»
+## Этап 3 (v2.0.0) — «Группы, каналы, форумы и авто-модерация» (✅ выполнено в v2.0.0, code 41)
 
 1. **Расширенные обновления `getUpdates` (+ опциональный Webhook-адаптер):**
-   - `allowed_updates`: `edited_message`, `channel_post`, `edited_channel_post`, `my_chat_member`, `chat_member`, `chat_join_request`, `message_reaction`, `poll`, `poll_answer`.
-2. **Администрирование и модерация групп:**
-   - Методы Bot API: `banChatMember`, `unbanChatMember`, `restrictChatMember`, `promoteChatMember`, `approveChatJoinRequest`, `declineChatJoinRequest`, `getChat`, `getChatAdministrators`.
-   - Готовые модули правил: авто-приветствие и кнопка-капча для новых участников, антиспам/стоп-слова/удаление ссылок с авто-мутом, авто-приём заявок.
+   - Единый парсер `TelegramUpdatesParser` + `MiniJson` (`TelegramUpdates.kt`): 11 типов `allowed_updates` (`message`, `edited_message`, `channel_post`, `edited_channel_post`, `callback_query`, `my_chat_member`, `chat_member`, `chat_join_request`, `message_reaction`, `poll`, `poll_answer`).
+   - Опциональный локальный Webhook-приёмник: `WebhookQueue` + эндпоинт `POST /telegram-webhook/<botId>` в `FileServer.kt` (с проверкой `X-Telegram-Bot-Api-Secret-Token` по per-`botId` секрету), а также методы `setWebhook` и `getWebhookInfo` в `TelegramApi.kt`.
+2. **Администрирование и модерация групп (`GroupModerationEngine` + `ModerationPolicy` + `GroupsScreen`):**
+   - Методы Bot API в `TelegramApi.kt`: `banChatMember`, `unbanChatMember`, `restrictChatMember`, `promoteChatMember`, `approveChatJoinRequest`, `declineChatJoinRequest`, `getChat`, `getChatMemberCount`, `getChatAdministrators`, `createForumTopic`.
+   - Готовые модули на бота (`GroupModerationConfig` в `LocalBotStore`): приветствие новых участников с автоудалением, кнопка-капча при входе (`cap_<chatId>_<userId>`, `restrictChatMember` + таймаут мут/кик), антиспам (стоп-слова, блокировка ссылок/`@упоминаний` с белым списком доменов, антифлуд `FloodTracker`, обход для админов по `adminIds` + кэшу `getChatAdministrators`), авто-приём заявок (`chat_join_request`) и быстрое управление чатами/темами/участниками в `GroupsScreen` (`Routes.GROUPS`).
 3. **Темы супергрупп (форумы), реакции и опросы:**
-   - Полная маршрутизация `message_thread_id` в правилах и расписании, авто-реакции (`setMessageReaction`), реакция бота на `message_reaction` и `poll_answer`.
+   - Маршрутизация `message_thread_id` в `RuleOptions.targetThreadId`, `ScheduleEvent.threadId` и `GroupModerationConfig.defaultThreadId` (`ModerationPolicy.resolveThreadId`), фильтр области чата правил (`RuleOptions.chatScope`: везде / ЛС / группы / каналы), поддержка `messageThreadId` в `sendMessage`, медиа, опросах, `sendDice` и `AnimPlayer`, а также экспорт `message_thread_id` в `SettingsExporter`.
+   - Авто-реакция `RuleOptions.autoReactEmoji` (`setMessageReaction`), триггеры на входящие реакции `message_reaction` и логирование/ответ на `poll` / `poll_answer`.
+   - Регрессионный набор `Stage3Test.kt` (20 проверок) и проверка изоляции `check-bot-isolation.py`.
 
 ---
 

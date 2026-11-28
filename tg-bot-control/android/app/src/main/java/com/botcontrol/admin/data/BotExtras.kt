@@ -153,12 +153,16 @@ data class RuleOptions(
     val adminOnly: Boolean = false,
     val requiredRole: String = "",     // "" | "vip" | "admin"
     val skipSubCheck: Boolean = false, // разрешить без проверки подписки на канал
+    val autoReactEmoji: String = "",   // авто-реакция на входящее сообщение (Stage 3)
+    val targetThreadId: Int? = null,   // конкретная тема форума для ответа (Stage 3)
+    val chatScope: String = "",        // "" | "private" | "group" | "channel" (Stage 3)
 ) {
     val isDefault: Boolean
         get() = parseMode.isBlank() && !disablePreview && !silent && !protectContent &&
             !replyTo && !wholeWord && mediaType.isBlank() && mediaRef.isBlank() &&
             pollQuestion.isBlank() && pollOptions.isEmpty() && pollAnonymous &&
-            !pollMultiple && !removeKeyboard && !adminOnly && requiredRole.isBlank() && !skipSubCheck
+            !pollMultiple && !removeKeyboard && !adminOnly && requiredRole.isBlank() &&
+            !skipSubCheck && autoReactEmoji.isBlank() && targetThreadId == null && chatScope.isBlank()
 }
 
 /** Настройки Reply-клавиатуры внизу чата. */
@@ -232,6 +236,10 @@ object BotJson {
     fun keyboardOptions(json: String): KeyboardOptions =
         if (json.isBlank()) KeyboardOptions()
         else load(json, object : TypeToken<KeyboardOptions>() {}, KeyboardOptions())
+
+    fun groupModeration(json: String): GroupModerationConfig =
+        if (json.isBlank()) GroupModerationConfig()
+        else load(json, object : TypeToken<GroupModerationConfig>() {}, GroupModerationConfig())
 }
 
 /** Детерминированные id кнопок (рекурсивно, включая вложенные submenu):
@@ -620,4 +628,178 @@ object AccessPolicy {
 
     fun isMemberSubscribed(status: String): Boolean =
         status.trim().lowercase() in subscribedStatuses
+}
+
+/** Настройки групп, каналов, тем форумов, реакций, опросов и авто-модерации на бота (Stage 3). */
+data class GroupModerationConfig(
+    val welcomeEnabled: Boolean = false,
+    val welcomeText: String = "👋 Добро пожаловать, {user}!",
+    val welcomeDeleteAfterSec: Int = 0,
+    val captchaEnabled: Boolean = false,
+    val captchaPrompt: String = "👋 {user}, подтвердите, что вы не робот — нажмите кнопку ниже в течение {timeout} мин.",
+    val captchaButtonText: String = "✅ Я не робот",
+    val captchaTimeoutMin: Int = 5,
+    val captchaActionOnTimeout: String = "kick", // kick | mute
+    val autoApproveJoinRequests: Boolean = false,
+    val joinRequestWelcome: String = "",
+    val antispamEnabled: Boolean = false,
+    val blockLinks: Boolean = false,
+    val allowedLinkDomains: List<String> = emptyList(),
+    val stopWords: List<String> = emptyList(),
+    val antispamAction: String = "delete", // delete | mute | ban
+    val muteDurationMin: Int = 60,
+    val antispamWarnText: String = "⚠️ {user}, сообщение удалено правилами чата.",
+    val floodLimitCount: Int = 0,
+    val floodWindowSec: Int = 10,
+    val defaultThreadId: Int? = null,
+    val logChatId: String = "",
+    val reactionTriggerEmoji: String = "",
+    val reactionTriggerReply: String = "",
+    val pollAnswerReply: String = "",
+)
+
+/** Результат проверки сообщения в группе фильтрами антиспама. */
+data class ModerationVerdict(
+    val violation: Boolean,
+    val reason: String = "",   // stopword | link | flood
+    val matched: String = "",
+    val action: String = "",   // delete | mute | ban
+)
+
+/** Правила модерации групп, фильтрации по типу чата и маршрутизации тем форума (чистый Kotlin). */
+object ModerationPolicy {
+    private val urlRegex = Regex(
+        """(?i)(?:https?://|www\.|(?:t\.me|telegram\.me)/)[^\s<>()]+|(?<![\w.])@[a-zA-Z][a-zA-Z0-9_]{3,}""",
+    )
+
+    fun isGroupChat(chatType: String): Boolean =
+        chatType.equals("group", ignoreCase = true) ||
+            chatType.equals("supergroup", ignoreCase = true)
+
+    fun matchesChatScope(chatScope: String, chatType: String): Boolean = when (chatScope.trim().lowercase()) {
+        "" -> true
+        "private" -> chatType.isBlank() || chatType.equals("private", ignoreCase = true)
+        "group", "groups" -> isGroupChat(chatType)
+        "channel" -> chatType.equals("channel", ignoreCase = true)
+        else -> true
+    }
+
+    fun extractUrls(text: String): List<String> =
+        if (text.isBlank()) emptyList()
+        else urlRegex.findAll(text).map { it.value.trimEnd('.', ',', ';', ')', '!') }.toList()
+
+    fun domainOf(rawUrl: String): String {
+        val clean = rawUrl.trim().lowercase()
+        if (clean.startsWith("@")) return clean
+        val noScheme = clean
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .removePrefix("www.")
+        return noScheme.substringBefore('/').substringBefore('?').substringBefore(':')
+    }
+
+    fun isUrlAllowed(url: String, allowedDomains: List<String>): Boolean {
+        if (allowedDomains.isEmpty()) return false
+        val host = domainOf(url)
+        if (host.isBlank()) return false
+        if (host.startsWith("@")) {
+            return allowedDomains.any { it.trim().lowercase() == host }
+        }
+        return allowedDomains.any { raw ->
+            val dom = raw.trim().lowercase().removePrefix("https://").removePrefix("http://").removePrefix("www.").substringBefore('/')
+            dom.isNotBlank() && !dom.startsWith("@") && (host == dom || host.endsWith(".$dom"))
+        }
+    }
+
+    fun checkMessage(
+        config: GroupModerationConfig,
+        text: String,
+        isAdmin: Boolean,
+        chatType: String,
+    ): ModerationVerdict {
+        if (!config.antispamEnabled || isAdmin || !isGroupChat(chatType)) {
+            return ModerationVerdict(false)
+        }
+        val normalized = text.lowercase()
+        for (rawWord in config.stopWords) {
+            val w = rawWord.trim().lowercase()
+            if (w.isNotBlank() && normalized.contains(w)) {
+                return ModerationVerdict(
+                    violation = true,
+                    reason = "stopword",
+                    matched = w,
+                    action = config.antispamAction.ifBlank { "delete" },
+                )
+            }
+        }
+        if (config.blockLinks) {
+            for (u in extractUrls(text)) {
+                if (!isUrlAllowed(u, config.allowedLinkDomains)) {
+                    return ModerationVerdict(
+                        violation = true,
+                        reason = "link",
+                        matched = u.take(80),
+                        action = config.antispamAction.ifBlank { "delete" },
+                    )
+                }
+            }
+        }
+        return ModerationVerdict(false)
+    }
+
+    fun resolveThreadId(
+        ruleTargetThreadId: Int?,
+        incomingThreadId: Int?,
+        defaultGroupThreadId: Int?,
+        isGroupChat: Boolean,
+    ): Int? = when {
+        ruleTargetThreadId != null && ruleTargetThreadId > 0 -> ruleTargetThreadId
+        incomingThreadId != null && incomingThreadId > 0 -> incomingThreadId
+        isGroupChat && defaultGroupThreadId != null && defaultGroupThreadId > 0 -> defaultGroupThreadId
+        else -> null
+    }
+}
+
+/** Трекер частоты сообщений (антифлуд по ключу botId:chatId:userId). */
+object FloodTracker {
+    private val windows = ConcurrentHashMap<String, MutableList<Long>>()
+
+    fun recordAndCheck(
+        botId: Long,
+        chatId: Long,
+        userId: Long,
+        limitCount: Int,
+        windowSec: Int,
+        nowMs: Long = System.currentTimeMillis(),
+    ): Boolean {
+        if (limitCount <= 0 || windowSec <= 0 || userId == 0L) return false
+        val key = "$botId:$chatId:$userId"
+        val cutoff = nowMs - windowSec.coerceIn(1, 300) * 1000L
+        val list = windows.getOrPut(key) { mutableListOf() }
+        synchronized(list) {
+            list.removeAll { it < cutoff }
+            list.add(nowMs)
+            return list.size > limitCount
+        }
+    }
+
+    fun reset(botId: Long) {
+        val prefix = "$botId:"
+        windows.keys.filter { it.startsWith(prefix) }.forEach { windows.remove(it) }
+    }
+}
+
+/** Кодирование/разбор callback_data капчи: "cap_<chatId>_<userId>". */
+object CaptchaPolicy {
+    fun callbackData(chatId: Long, userId: Long): String = "cap_${chatId}_$userId"
+
+    fun parseCallback(data: String): Pair<Long, Long>? {
+        if (!data.startsWith("cap_")) return null
+        val rest = data.removePrefix("cap_")
+        val sep = rest.lastIndexOf('_')
+        if (sep <= 0) return null
+        val chatId = rest.substring(0, sep).toLongOrNull() ?: return null
+        val userId = rest.substring(sep + 1).toLongOrNull() ?: return null
+        return chatId to userId
+    }
 }

@@ -1,3 +1,19 @@
+# BotControl v2.0.0 (code 41)
+
+## 🛡 Группы, каналы, темы форумов, авто-модерация и Webhook-адаптер
+
+Третий крупный этап дорожной карты `ДОРОЖНАЯ-КАРТА-TELEGRAM.md` (строго per-`botId`):
+
+- **Расширенные обновления `getUpdates` и Webhook-адаптер (`TelegramUpdates.kt` + `WebhookQueue`):**
+  - Поддержка всех 11 типов `allowed_updates`: `message`, `edited_message`, `channel_post`, `edited_channel_post`, `callback_query`, `my_chat_member`, `chat_member`, `chat_join_request`, `message_reaction`, `poll`, `poll_answer`.
+  - Опциональный локальный приёмник `POST /telegram-webhook/<botId>` в `FileServer` (с проверкой `X-Telegram-Bot-Api-Secret-Token`) плюс `setWebhook` / `getWebhookInfo` в интерфейсе.
+- **Администрирование и авто-модерация групп (`GroupModerationEngine` + `GroupsScreen`):**
+  - Методы Bot API: `banChatMember`, `unbanChatMember`, `restrictChatMember`, `promoteChatMember`, `approveChatJoinRequest`, `declineChatJoinRequest`, `getChat`, `getChatMemberCount`, `getChatAdministrators`, `createForumTopic`.
+  - Настраиваемые модули на бота: авто-приветствие новых участников (с таймером удаления), кнопка-капча при входе (`restrictChatMember` + таймаут мут/кик), антиспам (стоп-слова, блокировка ссылок и `@упоминаний` с белым списком доменов, антифлуд `FloodTracker`, обход для админов группы), авто-одобрение заявок (`chat_join_request`) и быстрые инструменты управления чатом/участником/темой форума в экране «🛡 Группы, каналы и модерация».
+- **Темы супергрупп (форумы), область правил, реакции и опросы:**
+  - Маршрутизация `message_thread_id` в правилах (`RuleOptions.targetThreadId`), расписании (`ScheduleEvent.threadId`), темах по умолчанию и в ответах/медиа/опросах/`sendDice`/`AnimPlayer`.
+  - Фильтр области чата для правил (`RuleOptions.chatScope`: везде / ЛС / группы / каналы), авто-реакция `RuleOptions.autoReactEmoji` (`setMessageReaction`), реакция бота на `message_reaction` и логирование/ответ на `poll` / `poll_answer`.
+
 # BotControl v1.9.0 (code 40)
 
 ## 🧠 Память, пошаговые анкеты (FSM), база подписчиков, роли и массовые рассылки

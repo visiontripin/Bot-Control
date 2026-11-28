@@ -334,6 +334,9 @@ fun LocalBotScreen(
         var adminOnly by remember { mutableStateOf(initOpts.adminOnly) }
         var requiredRole by remember { mutableStateOf(initOpts.requiredRole) }
         var skipSubCheck by remember { mutableStateOf(initOpts.skipSubCheck) }
+        var autoReactEmoji by remember { mutableStateOf(initOpts.autoReactEmoji) }
+        var targetThreadText by remember { mutableStateOf(initOpts.targetThreadId?.toString().orEmpty()) }
+        var chatScope by remember { mutableStateOf(initOpts.chatScope) }
         var mediaType by remember { mutableStateOf(initOpts.mediaType.ifBlank { "photo" }) }
         var mediaRef by remember { mutableStateOf(initOpts.mediaRef) }
         var pollQuestion by remember { mutableStateOf(initOpts.pollQuestion.ifBlank { initial?.responseText.orEmpty() }) }
@@ -344,7 +347,9 @@ fun LocalBotScreen(
             mutableStateOf(initOpts.parseMode.isNotBlank() || initOpts.disablePreview ||
                 initOpts.silent || initOpts.protectContent || initOpts.replyTo ||
                 initOpts.wholeWord || initOpts.removeKeyboard ||
-                initOpts.adminOnly || initOpts.requiredRole.isNotBlank() || initOpts.skipSubCheck)
+                initOpts.adminOnly || initOpts.requiredRole.isNotBlank() || initOpts.skipSubCheck ||
+                initOpts.autoReactEmoji.isNotBlank() || initOpts.targetThreadId != null ||
+                initOpts.chatScope.isNotBlank())
         }
         val regexValid = type != "regex" || runCatching { Regex(pattern) }.isSuccess
         LaunchedEffect(Unit) { packs = localStore.packs() }
@@ -550,6 +555,26 @@ fun LocalBotScreen(
                                 FilterChip(selected = requiredRole == r, onClick = { requiredRole = r }, label = { Text(lbl) })
                             }
                         }
+                        Spacer(Modifier.height(4.dp))
+                        Text("Где работает правило (область чата):", style = MaterialTheme.typography.bodySmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("" to "Везде", "private" to "ЛС", "group" to "Группы", "channel" to "Каналы").forEach { (sc, lbl) ->
+                                FilterChip(selected = chatScope == sc, onClick = { chatScope = sc }, label = { Text(lbl) })
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                autoReactEmoji, { autoReactEmoji = it },
+                                label = { Text("Автореакция (👍/🔥)") },
+                                singleLine = true, modifier = Modifier.weight(1f),
+                            )
+                            OutlinedTextField(
+                                targetThreadText, { s -> targetThreadText = s.filter { it.isDigit() }.take(9) },
+                                label = { Text("Тема форума ID") },
+                                singleLine = true, modifier = Modifier.weight(1f),
+                            )
+                        }
                     }
                     Spacer(Modifier.height(8.dp))
                     if (action != "llm") {
@@ -582,6 +607,9 @@ fun LocalBotScreen(
                                 adminOnly = adminOnly,
                                 requiredRole = requiredRole,
                                 skipSubCheck = skipSubCheck,
+                                autoReactEmoji = autoReactEmoji.trim(),
+                                targetThreadId = targetThreadText.trim().toIntOrNull()?.takeIf { it > 0 },
+                                chatScope = chatScope,
                             )
                             val id = repository.saveBotRule(
                                 BotRuleEntity(

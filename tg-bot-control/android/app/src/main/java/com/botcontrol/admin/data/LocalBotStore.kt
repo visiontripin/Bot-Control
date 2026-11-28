@@ -330,6 +330,7 @@ class LocalBotStore(context: Context) {
                 chanKey(botId), listOnKey(botId), listingsKey(botId), menuSigKey(botId),
                 adminIdsKey(botId), reqChanKey(botId), reqChanLinkKey(botId), reqChanPromptKey(botId),
                 fsmKey(botId), listMaxKey(botId), listAlbumKey(botId),
+                groupModKey(botId), webhookSecretKey(botId),
             ).forEach { key -> it.remove(key) }
         }
     }
@@ -348,6 +349,8 @@ class LocalBotStore(context: Context) {
     private fun reqChanLinkKey(id: Long) = stringPreferencesKey("req_channel_link_$id")
     private fun reqChanPromptKey(id: Long) = stringPreferencesKey("req_channel_prompt_$id")
     private fun fsmKey(id: Long) = stringPreferencesKey("fsm_flows_$id")
+    private fun groupModKey(id: Long) = stringPreferencesKey("group_mod_$id")
+    private fun webhookSecretKey(id: Long) = stringPreferencesKey("webhook_secret_$id")
 
     suspend fun adminIdsRaw(botId: Long = -1L): String {
         val id = resolveId(botId)
@@ -401,6 +404,27 @@ class LocalBotStore(context: Context) {
     suspend fun setFsmFlows(flows: List<FsmFlow>, botId: Long = -1L) {
         val id = resolveId(botId)
         appContext.localBotDataStore.edit { it[fsmKey(id)] = BotJson.save(flows) }
+    }
+
+    suspend fun groupModeration(botId: Long = -1L): GroupModerationConfig {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[groupModKey(id)].orEmpty() }.first()
+        return BotJson.groupModeration(raw)
+    }
+
+    suspend fun setGroupModeration(value: GroupModerationConfig, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[groupModKey(id)] = BotJson.save(value) }
+    }
+
+    suspend fun webhookSecret(botId: Long = -1L): String {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[webhookSecretKey(id)].orEmpty() }.first()
+    }
+
+    suspend fun setWebhookSecret(value: String, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[webhookSecretKey(id)] = value.trim().take(256) }
     }
 
     /** Макс. активных объявлений на одного пользователя (0 = без лимита). */

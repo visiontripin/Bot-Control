@@ -25,46 +25,9 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/** One incoming Telegram message (with metadata for rules, scripts, media and forums). */
-data class TgMessage(
-    val updateId: Long,
-    val chatId: Long,
-    val text: String,
-    val firstName: String,
-    /** Пусто для текста; иначе человекочитаемый тип: «фото», «стикер», «голосовое»… */
-    val kind: String = "",
-    /** file_id наибольшего фото (kind == "фото"). */
-    val photoId: String = "",
-    val username: String = "",
-    val userId: Long = 0L,
-    val chatType: String = "",
-    val messageId: Int = 0,
-    val messageThreadId: Int? = null,
-    val caption: String = "",
-    /** file_id любого входящего вложения (стикер, гифка, файл, видео, голосовое, аудио, фото). */
-    val fileId: String = "",
-    val replyToText: String = "",
-    val locationLat: Double? = null,
-    val locationLon: Double? = null,
-    val contactPhone: String = "",
-)
-
-/** Нажатие inline-кнопки (callback_query). */
-data class TgCallback(
-    val updateId: Long,
-    val callbackId: String,
-    val chatId: Long,
-    val messageId: Int,
-    val data: String,
-    val firstName: String,
-    val userId: Long = 0L,
-    val username: String = "",
-)
-
 /**
- * Minimal Telegram Bot API client (long polling) for the on-phone bot mode.
- * Endpoints: getMe, getUpdates, sendMessage, sendChatAction,
- * answerCallbackQuery, editMessageText, deleteWebhook — plain HTTPS + JSON.
+ * Telegram Bot API client (long polling + admin/group/forum/reaction/poll methods) for the on-phone bot mode.
+ * Incoming data classes & JSON parser live in TelegramUpdates.kt.
  */
 class TelegramApi(private val token: String) {
 
@@ -211,11 +174,11 @@ class TelegramApi(private val token: String) {
         }
     }
 
-    /** Long poll. [timeoutSec] up to 50; returns messages, callbacks and the next offset. */
+    /** Long poll. [timeoutSec] up to 50; returns full [TgUpdatesBatch] (messages, edits, channel posts, callbacks, members, join requests, reactions, polls). */
     suspend fun getUpdates(
         offset: Long,
         timeoutSec: Int = 25,
-    ): Triple<List<TgMessage>, List<TgCallback>, Long> {
+    ): TgUpdatesBatch {
         val rem = TelegramRateLimit.remainingCooldownSec(token, "poll")
         if (rem > 0L) {
             throw TelegramApiException(
@@ -226,105 +189,18 @@ class TelegramApi(private val token: String) {
                 message = "getUpdates HTTP 429: подождите ещё $rem с",
             )
         }
+        val allowedJson = java.net.URLEncoder.encode(
+            Gson().toJson(TelegramUpdatesParser.DEFAULT_ALLOWED_UPDATES),
+            "UTF-8",
+        )
         val req = Request.Builder()
-            .url("${url("getUpdates")}?timeout=$timeoutSec&offset=$offset" +
-                "&allowed_updates=%5B%22message%22,%22callback_query%22%5D")
+            .url("${url("getUpdates")}?timeout=$timeoutSec&offset=$offset&allowed_updates=$allowedJson")
             .build()
         return executeCall(pollClient, req) { resp ->
             val text = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw httpFailure("getUpdates", "poll", resp, text)
-            parse("getUpdates", text) { root ->
-                val messages = mutableListOf<TgMessage>()
-                val callbacks = mutableListOf<TgCallback>()
-                var maxId = if (offset > 0) offset - 1 else 0L
-                root.getAsJsonArray("result")?.forEach { element ->
-                    val update = element.asJsonObject
-                    val updateId = update.get("update_id").asLong
-                    if (updateId > maxId) maxId = updateId
-
-                    update.getAsJsonObject("message")?.let { message ->
-                        val chat = message.getAsJsonObject("chat") ?: return@forEach
-                        val kind = when {
-                            message.get("text")?.isJsonNull == false -> ""
-                            message.get("photo")?.isJsonNull == false -> "фото"
-                            message.get("sticker")?.isJsonNull == false -> "стикер"
-                            message.get("voice")?.isJsonNull == false -> "голосовое"
-                            message.get("video_note")?.isJsonNull == false -> "видеосообщение"
-                            message.get("video")?.isJsonNull == false -> "видео"
-                            message.get("animation")?.isJsonNull == false -> "гифка"
-                            message.get("document")?.isJsonNull == false -> "файл"
-                            message.get("audio")?.isJsonNull == false -> "аудио"
-                            message.get("location")?.isJsonNull == false -> "геолокация"
-                            message.get("contact")?.isJsonNull == false -> "контакт"
-                            else -> "вложение"
-                        }
-                        val photoId = if (kind == "фото")
-                            message.getAsJsonArray("photo")?.lastOrNull()
-                                ?.asJsonObject?.get("file_id")?.asString ?: ""
-                        else ""
-                        val attachFileId = when (kind) {
-                            "фото" -> photoId
-                            "стикер" -> message.getAsJsonObject("sticker")?.get("file_id")?.asString ?: ""
-                            "гифка" -> message.getAsJsonObject("animation")?.get("file_id")?.asString ?: ""
-                            "файл" -> message.getAsJsonObject("document")?.get("file_id")?.asString ?: ""
-                            "видео" -> message.getAsJsonObject("video")?.get("file_id")?.asString ?: ""
-                            "голосовое" -> message.getAsJsonObject("voice")?.get("file_id")?.asString ?: ""
-                            "аудио" -> message.getAsJsonObject("audio")?.get("file_id")?.asString ?: ""
-                            "видеосообщение" -> message.getAsJsonObject("video_note")?.get("file_id")?.asString ?: ""
-                            else -> ""
-                        }
-                        val from = message.getAsJsonObject("from")
-                        val replyMsg = message.getAsJsonObject("reply_to_message")
-                        val replyText = replyMsg?.get("text")?.takeIf { !it.isJsonNull }?.asString
-                            ?: replyMsg?.get("caption")?.takeIf { !it.isJsonNull }?.asString
-                            ?: ""
-                        val loc = message.getAsJsonObject("location")
-                        val contact = message.getAsJsonObject("contact")
-                        messages.add(
-                            TgMessage(
-                                updateId = updateId,
-                                chatId = chat.get("id").asLong,
-                                text = message.get("text")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                                firstName = from?.get("first_name")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                                kind = kind,
-                                photoId = photoId,
-                                username = from?.get("username")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                                userId = from?.get("id")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
-                                chatType = chat.get("type")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                                messageId = message.get("message_id")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
-                                messageThreadId = message.get("message_thread_id")?.takeIf { !it.isJsonNull }?.asInt,
-                                caption = message.get("caption")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                                fileId = attachFileId,
-                                replyToText = replyText,
-                                locationLat = loc?.get("latitude")?.takeIf { !it.isJsonNull }?.asDouble,
-                                locationLon = loc?.get("longitude")?.takeIf { !it.isJsonNull }?.asDouble,
-                                contactPhone = contact?.get("phone_number")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                            )
-                        )
-                        return@forEach
-                    }
-
-                    update.getAsJsonObject("callback_query")?.let { cb ->
-                        val message = cb.getAsJsonObject("message")
-                        val chat = message?.getAsJsonObject("chat")
-                        val from = cb.getAsJsonObject("from")
-                        if (chat != null) {
-                            callbacks.add(
-                                TgCallback(
-                                    updateId = updateId,
-                                    callbackId = cb.get("id").asString,
-                                    chatId = chat.get("id").asLong,
-                                    messageId = message.get("message_id")?.asInt ?: 0,
-                                    data = cb.get("data")?.asString ?: "",
-                                    firstName = from?.get("first_name")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                                    userId = from?.get("id")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
-                                    username = from?.get("username")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                                )
-                            )
-                        }
-                    }
-                }
-                Triple(messages, callbacks, maxId + 1)
+            parse("getUpdates", text) { _ ->
+                TelegramUpdatesParser.parseGetUpdatesResponse(text, offset)
             }
         }
     }
@@ -476,7 +352,7 @@ class TelegramApi(private val token: String) {
      * Анимированный эмодзи Telegram со случайным значением (sendDice):
      * 🎲 🎯 🏀 ⚽ 🎳 🎰. Значение выбирает сам Telegram.
      */
-    suspend fun sendDice(chatId: Long, emoji: String = "🎲"): Result<Unit> = withShortRateLimitRetry {
+    suspend fun sendDice(chatId: Long, emoji: String = "🎲", messageThreadId: Int? = null): Result<Unit> = withShortRateLimitRetry {
         val bucket = "chat:$chatId"
         val rem = TelegramRateLimit.remainingCooldownSec(token, bucket)
         if (rem > 0L) {
@@ -485,7 +361,9 @@ class TelegramApi(private val token: String) {
             )
         }
         try {
-            val payload = Gson().toJson(mapOf("chat_id" to chatId, "emoji" to emoji)).toRequestBody(json)
+            val payloadMap = mutableMapOf<String, Any>("chat_id" to chatId, "emoji" to emoji)
+            if (messageThreadId != null && messageThreadId > 0) payloadMap["message_thread_id"] = messageThreadId
+            val payload = Gson().toJson(payloadMap).toRequestBody(json)
             executeCall(fastClient, Request.Builder().url(url("sendDice")).post(payload).build()) { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (resp.isSuccessful) Result.success(Unit)
@@ -1413,6 +1291,301 @@ class TelegramApi(private val token: String) {
                 if (!resp.isSuccessful) Result.failure(httpFailure("getChatMember", "chat:$chatIdOrChannel", resp, body))
                 else Result.success(parse("getChatMember", body) {
                     it.getAsJsonObject("result")?.get("status")?.asString.orEmpty()
+                })
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Stage 3: Администрирование групп, форумы, заявки и Webhook-адаптер
+    // ------------------------------------------------------------------
+
+    suspend fun banChatMember(
+        chatId: String,
+        userId: Long,
+        untilDateSec: Long = 0L,
+        revokeMessages: Boolean = false,
+    ): Result<Unit> = withShortRateLimitRetry {
+        val bucket = "chat:$chatId"
+        try {
+            val map = mutableMapOf<String, Any>("chat_id" to chatId, "user_id" to userId)
+            if (untilDateSec > 0L) map["until_date"] = untilDateSec
+            if (revokeMessages) map["revoke_messages"] = true
+            val payload = Gson().toJson(map).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("banChatMember")).post(payload).build()) { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(httpFailure("banChatMember", bucket, resp, resp.body?.string().orEmpty()))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun unbanChatMember(
+        chatId: String,
+        userId: Long,
+        onlyIfBanned: Boolean = true,
+    ): Result<Unit> = withShortRateLimitRetry {
+        val bucket = "chat:$chatId"
+        try {
+            val payload = Gson().toJson(mapOf(
+                "chat_id" to chatId,
+                "user_id" to userId,
+                "only_if_banned" to onlyIfBanned,
+            )).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("unbanChatMember")).post(payload).build()) { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(httpFailure("unbanChatMember", bucket, resp, resp.body?.string().orEmpty()))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun restrictChatMember(
+        chatId: String,
+        userId: Long,
+        canSendMessages: Boolean,
+        canSendOtherMessages: Boolean = canSendMessages,
+        canAddWebPagePreviews: Boolean = canSendMessages,
+        untilDateSec: Long = 0L,
+    ): Result<Unit> = withShortRateLimitRetry {
+        val bucket = "chat:$chatId"
+        try {
+            val perms = mapOf(
+                "can_send_messages" to canSendMessages,
+                "can_send_audios" to canSendOtherMessages,
+                "can_send_documents" to canSendOtherMessages,
+                "can_send_photos" to canSendOtherMessages,
+                "can_send_videos" to canSendOtherMessages,
+                "can_send_video_notes" to canSendOtherMessages,
+                "can_send_voice_notes" to canSendOtherMessages,
+                "can_send_polls" to canSendMessages,
+                "can_send_other_messages" to canSendOtherMessages,
+                "can_add_web_page_previews" to canAddWebPagePreviews,
+                "can_invite_users" to canSendMessages,
+            )
+            val map = mutableMapOf<String, Any>(
+                "chat_id" to chatId,
+                "user_id" to userId,
+                "permissions" to perms,
+            )
+            if (untilDateSec > 0L) map["until_date"] = untilDateSec
+            val payload = Gson().toJson(map).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("restrictChatMember")).post(payload).build()) { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(httpFailure("restrictChatMember", bucket, resp, resp.body?.string().orEmpty()))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun promoteChatMember(
+        chatId: String,
+        userId: Long,
+        canManageChat: Boolean = true,
+        canDeleteMessages: Boolean = true,
+        canRestrictMembers: Boolean = true,
+        canInviteUsers: Boolean = true,
+        canPinMessages: Boolean = true,
+        canManageTopics: Boolean = false,
+    ): Result<Unit> = withShortRateLimitRetry {
+        val bucket = "chat:$chatId"
+        try {
+            val payload = Gson().toJson(mapOf(
+                "chat_id" to chatId,
+                "user_id" to userId,
+                "can_manage_chat" to canManageChat,
+                "can_delete_messages" to canDeleteMessages,
+                "can_restrict_members" to canRestrictMembers,
+                "can_invite_users" to canInviteUsers,
+                "can_pin_messages" to canPinMessages,
+                "can_manage_topics" to canManageTopics,
+            )).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("promoteChatMember")).post(payload).build()) { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(httpFailure("promoteChatMember", bucket, resp, resp.body?.string().orEmpty()))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun approveChatJoinRequest(chatId: String, userId: Long): Result<Unit> = withShortRateLimitRetry {
+        val bucket = "chat:$chatId"
+        try {
+            val payload = Gson().toJson(mapOf("chat_id" to chatId, "user_id" to userId)).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("approveChatJoinRequest")).post(payload).build()) { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(httpFailure("approveChatJoinRequest", bucket, resp, resp.body?.string().orEmpty()))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun declineChatJoinRequest(chatId: String, userId: Long): Result<Unit> = withShortRateLimitRetry {
+        val bucket = "chat:$chatId"
+        try {
+            val payload = Gson().toJson(mapOf("chat_id" to chatId, "user_id" to userId)).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("declineChatJoinRequest")).post(payload).build()) { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(httpFailure("declineChatJoinRequest", bucket, resp, resp.body?.string().orEmpty()))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getChat(chatId: String): Result<TgChatInfo> = withShortRateLimitRetry {
+        val bucket = "chat:$chatId"
+        try {
+            val payload = Gson().toJson(mapOf("chat_id" to chatId)).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("getChat")).post(payload).build()) { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) Result.failure(httpFailure("getChat", bucket, resp, body))
+                else Result.success(parse("getChat", body) { root ->
+                    val r = root.getAsJsonObject("result")
+                    TgChatInfo(
+                        id = r.get("id")?.asLong ?: 0L,
+                        title = r.get("title")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        type = r.get("type")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        username = r.get("username")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        description = r.get("description")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        isForum = r.get("is_forum")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
+                    )
+                })
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getChatMemberCount(chatId: String): Result<Int> {
+        val bucket = "chat:$chatId"
+        return try {
+            val payload = Gson().toJson(mapOf("chat_id" to chatId)).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("getChatMemberCount")).post(payload).build()) { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) Result.failure(httpFailure("getChatMemberCount", bucket, resp, body))
+                else Result.success(parse("getChatMemberCount", body) { it.get("result")?.asInt ?: 0 })
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getChatAdministrators(chatId: String): Result<List<TgChatAdmin>> = withShortRateLimitRetry {
+        val bucket = "chat:$chatId"
+        try {
+            val payload = Gson().toJson(mapOf("chat_id" to chatId)).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("getChatAdministrators")).post(payload).build()) { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) Result.failure(httpFailure("getChatAdministrators", bucket, resp, body))
+                else Result.success(parse("getChatAdministrators", body) { root ->
+                    root.getAsJsonArray("result")?.mapNotNull { el ->
+                        val obj = el.asJsonObject
+                        val user = obj.getAsJsonObject("user") ?: return@mapNotNull null
+                        TgChatAdmin(
+                            userId = user.get("id")?.asLong ?: 0L,
+                            firstName = user.get("first_name")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                            username = user.get("username")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                            status = obj.get("status")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                            customTitle = obj.get("custom_title")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        )
+                    }.orEmpty()
+                })
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun createForumTopic(chatId: String, name: String): Result<Int> = withShortRateLimitRetry {
+        val bucket = "chat:$chatId"
+        try {
+            val payload = Gson().toJson(mapOf(
+                "chat_id" to chatId,
+                "name" to name.trim().take(128).ifBlank { "Тема" },
+            )).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("createForumTopic")).post(payload).build()) { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) Result.failure(httpFailure("createForumTopic", bucket, resp, body))
+                else Result.success(parse("createForumTopic", body) {
+                    it.getAsJsonObject("result")?.get("message_thread_id")?.asInt ?: 0
+                })
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun setWebhook(
+        webhookUrl: String,
+        secretToken: String = "",
+        allowedUpdates: List<String> = TelegramUpdatesParser.DEFAULT_ALLOWED_UPDATES,
+    ): Result<Unit> = withShortRateLimitRetry {
+        val rem = TelegramRateLimit.remainingCooldownSec(token, "webhook")
+        if (rem > 0L) {
+            return@withShortRateLimitRetry Result.failure(
+                TelegramApiException("setWebhook", 429, "Too Many Requests", rem, "setWebhook HTTP 429: подождите ещё $rem с")
+            )
+        }
+        try {
+            val map = mutableMapOf<String, Any>(
+                "url" to webhookUrl.trim(),
+                "allowed_updates" to allowedUpdates,
+            )
+            if (secretToken.isNotBlank()) map["secret_token"] = secretToken.trim().take(256)
+            val payload = Gson().toJson(map).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("setWebhook")).post(payload).build()) { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(httpFailure("setWebhook", "webhook", resp, resp.body?.string().orEmpty()))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getWebhookInfo(): Result<String> {
+        return try {
+            executeCall(fastClient, Request.Builder().url(url("getWebhookInfo")).build()) { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) Result.failure(httpFailure("getWebhookInfo", "webhook", resp, body))
+                else Result.success(parse("getWebhookInfo", body) { root ->
+                    val r = root.getAsJsonObject("result")
+                    val u = r.get("url")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+                    val pending = r.get("pending_update_count")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                    val err = r.get("last_error_message")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+                    if (u.isBlank()) "Webhook не задан (работает long polling)"
+                    else "Webhook: $u (ожидает: $pending${if (err.isNotBlank()) ", ошибка: $err" else ""})"
                 })
             }
         } catch (e: CancellationException) {

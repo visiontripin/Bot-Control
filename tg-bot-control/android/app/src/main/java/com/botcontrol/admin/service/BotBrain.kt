@@ -9,6 +9,7 @@ import com.botcontrol.admin.data.BotMatcher
 import com.botcontrol.admin.data.InlineBtn
 import com.botcontrol.admin.data.LocalBotStore
 import com.botcontrol.admin.data.MessageCtx
+import com.botcontrol.admin.data.ModerationPolicy
 import com.botcontrol.admin.data.ReplyPack
 import com.botcontrol.admin.data.RuleOptions
 import com.botcontrol.admin.data.ShuffleBag
@@ -156,6 +157,10 @@ object BotBrain {
         var deniedCommandRule: RuleOptions? = null
         for (rule in rules) {
             val opts = BotJson.ruleOptions(rule.options)
+            if (!ModerationPolicy.matchesChatScope(opts.chatScope, msgCtx.chatType)) {
+                trace?.invoke("Пропускаю правило «${rule.pattern}» (область: ${opts.chatScope}, чат: ${msgCtx.chatType.ifBlank { "private" }})")
+                continue
+            }
             val matched = BotMatcher.matchesRule(rule.type, rule.pattern, text, opts.wholeWord)
             if (!matched) continue
             if (!AccessPolicy.canUseRule(opts, isAdmin, userRole)) {

@@ -30,6 +30,7 @@ import com.botcontrol.admin.ui.screens.BroadcastScreen
 import com.botcontrol.admin.ui.screens.DashboardScreen
 import com.botcontrol.admin.ui.screens.FaqScreen
 import com.botcontrol.admin.ui.screens.FsmScreen
+import com.botcontrol.admin.ui.screens.GroupsScreen
 import com.botcontrol.admin.ui.screens.ButtonsScreen
 import com.botcontrol.admin.ui.screens.ImportScreen
 import com.botcontrol.admin.ui.screens.PackEditScreen
@@ -81,6 +82,7 @@ object Routes {
     const val USERS = "users"
     const val BROADCAST = "broadcast"
     const val FSM = "fsm"
+    const val GROUPS = "groups"
     const val DEV_LOG = "devlog"
     const val EXPORT = "export"
     const val FILES = "files"
@@ -267,6 +269,9 @@ fun NavGraph(
         }
         composable(Routes.FSM) {
             FsmScreen(localStore, onBack = { nav.popBackStack() })
+        }
+        composable(Routes.GROUPS) {
+            GroupsScreen(localStore, repository, onBack = { nav.popBackStack() })
         }
         composable(Routes.DEV_LOG) {
             LogScreen(onBack = { nav.popBackStack() })

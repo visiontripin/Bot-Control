@@ -19,6 +19,7 @@ import com.botcontrol.admin.data.BotMatcher
 import com.botcontrol.admin.data.InlineBtn
 import com.botcontrol.admin.data.LocalBotStore
 import com.botcontrol.admin.data.MessageCtx
+import com.botcontrol.admin.data.ModerationPolicy
 import com.botcontrol.admin.data.ScheduleJitter
 import com.botcontrol.admin.data.findButtonRecursive
 import com.botcontrol.admin.data.withIds
@@ -27,6 +28,7 @@ import com.botcontrol.admin.data.telegram.TelegramApiException
 import com.botcontrol.admin.data.telegram.TelegramRateLimit
 import com.botcontrol.admin.data.telegram.TgCallback
 import com.botcontrol.admin.data.telegram.TgMessage
+import com.botcontrol.admin.data.telegram.TgUpdatesBatch
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -147,6 +149,8 @@ class LocalBotService : Service() {
         setState(botId) { it.copy(running = false) }
         botJobs.remove(botId)?.cancel()
         activeTokens.remove(botId)
+        GroupModerationEngine.clearBotCaches(botId)
+        WebhookQueue.clear(botId)
     }
 
     /** Scope пересоздаём только если он был отменён (глобальный стоп). */
@@ -292,12 +296,24 @@ class LocalBotService : Service() {
         coroutineScope {
             val botScope = this
             val schedJob = launch { schedulerLoop(botId, store, api) }
+            val webhookJob = launch {
+                while (isActive && states.value[botId]?.running == true) {
+                    val queued = WebhookQueue.drain(botId)
+                    if (queued.isNotEmpty()) {
+                        queued.forEach { batch ->
+                            processBatch(app, store, api, botId, batch, botScope)
+                        }
+                        refreshNotification()
+                    }
+                    delay(500L)
+                }
+            }
             try {
                 while (isActive && states.value[botId]?.running == true) {
                     try {
                         val timeoutSec = if (backlogDropped) 25 else 0
-                        val (messages, callbacks, nextOffset) = api.getUpdates(offset, timeoutSec)
-                        offset = nextOffset
+                        val batch = api.getUpdates(offset, timeoutSec)
+                        offset = batch.nextOffset
                         pollRateLimitStreak = 0
                         setState(botId) {
                             it.copy(
@@ -309,19 +325,12 @@ class LocalBotService : Service() {
                         if (!backlogDropped) {
                             // Confirm any backlog silently: no reply spam to messages sent before start.
                             backlogPages++
-                            if (messages.size + callbacks.size < 100 || backlogPages >= 5) {
+                            if (batch.totalCount < 100 || backlogPages >= 5) {
                                 backlogDropped = true
                             }
                             continue
                         }
-                        messages.forEach { msg ->
-                            handle(app, store, api, botId, msg, botScope)
-                            setState(botId) { it.copy(processed = it.processed + 1) }
-                        }
-                        callbacks.forEach { cb ->
-                            handleCallback(app, store, api, botId, cb, botScope)
-                            setState(botId) { it.copy(processed = it.processed + 1) }
-                        }
+                        processBatch(app, store, api, botId, batch, botScope)
                         refreshNotification()
                     } catch (e: CancellationException) {
                         throw e
@@ -375,8 +384,47 @@ class LocalBotService : Service() {
                     }
                 }
             } finally {
+                webhookJob.cancel()
                 schedJob.cancel()
             }
+        }
+    }
+
+    private suspend fun processBatch(
+        app: BotControlApp,
+        store: LocalBotStore,
+        api: TelegramApi,
+        botId: Long,
+        batch: TgUpdatesBatch,
+        botScope: CoroutineScope,
+    ) {
+        batch.memberUpdates.forEach { upd ->
+            GroupModerationEngine.handleMemberUpdate(app, store, api, botId, upd, botScope)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.joinRequests.forEach { req ->
+            GroupModerationEngine.handleJoinRequest(app, store, api, botId, req)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.messages.forEach { msg ->
+            handle(app, store, api, botId, msg, botScope)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.callbacks.forEach { cb ->
+            handleCallback(app, store, api, botId, cb, botScope)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.reactions.forEach { mr ->
+            GroupModerationEngine.handleMessageReaction(store, api, botId, mr)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.pollUpdates.forEach { p ->
+            GroupModerationEngine.handlePollUpdate(botId, p)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.pollAnswers.forEach { pa ->
+            GroupModerationEngine.handlePollAnswer(store, api, botId, pa)
+            setState(botId) { it.copy(processed = it.processed + 1) }
         }
     }
 
@@ -426,18 +474,56 @@ class LocalBotService : Service() {
         botScope: CoroutineScope,
     ) {
         store.setLastChatId(msg.chatId, botId)
+        val isGroup = ModerationPolicy.isGroupChat(msg.chatType)
+        if (msg.chatId < 0L) {
+            app.repository.touchBotUser(
+                botId = botId,
+                chatId = msg.chatId,
+                userId = 0L,
+                firstName = msg.chatTitle.ifBlank { "Чат ${msg.chatId}" },
+                username = "",
+                chatType = msg.chatType,
+            )
+        }
         val dbUser = app.repository.touchBotUser(
             botId = botId,
-            chatId = msg.chatId,
+            chatId = if (msg.chatId < 0L && msg.userId > 0L) msg.userId else msg.chatId,
             userId = msg.userId,
-            firstName = msg.firstName,
+            firstName = msg.firstName.ifBlank { msg.chatTitle },
             username = msg.username,
-            chatType = msg.chatType,
+            chatType = if (msg.chatId < 0L && msg.userId > 0L) "private" else msg.chatType,
         )
         val adminIds = store.adminIds(botId)
         val isAdmin = AccessPolicy.isAdmin(msg.userId, msg.chatId, dbUser.role, adminIds)
         if (dbUser.isBanned && !isAdmin) {
             BotLog.log(botId, "⛔ Бан: сообщение от chat=${msg.chatId} проигнорировано")
+            return
+        }
+
+        // Новые участники в группе/супергруппе (приветствие и кнопка-капча)
+        if (msg.newMembers.isNotEmpty() && isGroup) {
+            GroupModerationEngine.handleNewMembers(
+                store = store,
+                api = api,
+                botId = botId,
+                chatId = msg.chatId,
+                chatTitle = msg.chatTitle,
+                threadId = msg.messageThreadId,
+                members = msg.newMembers,
+                botScope = botScope,
+            )
+            return
+        }
+
+        val mod = store.groupModeration(botId)
+        // Антиспам/стоп-слова/ссылки/флуд в группах (проверяет и edited_message!)
+        if (isGroup && GroupModerationEngine.moderateIncomingMessage(app, store, api, botId, msg, mod, botScope)) {
+            return
+        }
+
+        // Редактирование сообщений не перезапускает обычные правила (чтобы не дублировать ответы).
+        if (msg.isEdited) {
+            BotLog.log(botId, "✏️ Правка сообщения msg=${msg.messageId} в чате ${msg.chatId}: '${msg.text.take(60)}'")
             return
         }
 
@@ -457,6 +543,17 @@ class LocalBotService : Service() {
             threadId = msg.messageThreadId,
             replyToText = msg.replyToText,
         )
+
+        // Обычные посты в каналах обрабатываем только при явном правиле с областью "channel" или автореакцией.
+        if (msg.isChannelPost) {
+            val channelRules = app.repository.botRules(botId).filter { r ->
+                r.enabled && BotJson.ruleOptions(r.options).chatScope.equals("channel", ignoreCase = true)
+            }
+            if (channelRules.isEmpty()) {
+                BotLog.log(botId, "📢 Пост в канале «${msg.chatTitle.ifBlank { msg.chatId.toString() }}»: '${text.take(60)}'")
+                return
+            }
+        }
 
         // Обязательная подписка на канал (включается в «Настройках бота»)
         val reqChan = store.requiredChannel(botId)
@@ -528,13 +625,23 @@ class LocalBotService : Service() {
         BotLog.log(botId, "💬 Источник: ${decision.source}; ответ: '${decision.reply.take(60)}'")
         val opts = decision.options
         val pm = opts.parseMode.ifBlank { null }
+        val resolvedThreadId = ModerationPolicy.resolveThreadId(
+            ruleTargetThreadId = opts.targetThreadId,
+            incomingThreadId = msg.messageThreadId,
+            defaultModThreadId = mod.defaultThreadId,
+            isGroupChat = isGroup,
+        )
+        if (opts.autoReactEmoji.isNotBlank() && msg.messageId > 0) {
+            api.setMessageReaction(msg.chatId, msg.messageId, opts.autoReactEmoji)
+                .onFailure { BotLog.log(botId, "⚠️ Автореакция не поставлена: ${it.message?.take(90)}") }
+        }
         decision.anim?.let { spec ->
             val items = store.packs().firstOrNull { it.id == spec.packId }?.items.orEmpty()
-            AnimPlayer.play(botScope, api, botId, msg.chatId, spec, msg.firstName, items, decision.menu)
+            AnimPlayer.play(botScope, api, botId, msg.chatId, spec, msg.firstName, items, decision.menu, messageThreadId = resolvedThreadId)
             return
         }
         if (decision.dice.isNotBlank()) {
-            api.sendDice(msg.chatId, decision.dice)
+            api.sendDice(msg.chatId, decision.dice, messageThreadId = resolvedThreadId)
                 .onFailure { BotLog.log(botId, "❌ Кубик не отправлен: ${it.message?.take(120)}") }
             return
         }
@@ -549,7 +656,7 @@ class LocalBotService : Service() {
                 silent = opts.silent,
                 protectContent = opts.protectContent,
                 replyToMessageId = decision.replyToMessageId,
-                messageThreadId = msg.messageThreadId,
+                messageThreadId = resolvedThreadId,
                 inlineMenu = decision.menu,
             ).onFailure {
                 BotLog.log(botId, "❌ Медиа (${decision.mediaType}) не отправлено: ${it.message?.take(140)}")
@@ -567,7 +674,7 @@ class LocalBotService : Service() {
                 silent = opts.silent,
                 protectContent = opts.protectContent,
                 replyToMessageId = decision.replyToMessageId,
-                messageThreadId = msg.messageThreadId,
+                messageThreadId = resolvedThreadId,
                 inlineMenu = decision.menu,
             ).onFailure {
                 BotLog.log(botId, "❌ Опрос не отправлен: ${it.message?.take(140)}")
@@ -588,7 +695,7 @@ class LocalBotService : Service() {
             silent = opts.silent,
             protectContent = opts.protectContent,
             replyToMessageId = decision.replyToMessageId,
-            messageThreadId = msg.messageThreadId,
+            messageThreadId = resolvedThreadId,
             keyboardOptions = kbOpts,
             removeKeyboard = opts.removeKeyboard,
         ).onFailure { err ->
@@ -695,6 +802,10 @@ class LocalBotService : Service() {
             } else {
                 api.answerCallbackQuery(cb.callbackId, "Подпишитесь на $reqChan и нажмите снова")
             }
+            return
+        }
+
+        if (GroupModerationEngine.handleCaptchaCallback(app, store, api, botId, cb, botScope)) {
             return
         }
 
@@ -1055,7 +1166,8 @@ class LocalBotService : Service() {
             try {
                 if (!store.remindersOn(botId)) continue
                 val chatId = store.lastChatId(botId)
-                if (chatId == 0L) continue
+                val allEvents = store.schedule(botId)
+                if (chatId == 0L && allEvents.none { it.enabled && it.toChannel }) continue
 
                 val cal = Calendar.getInstance()
                 val today = dayFormat.format(cal.time)
@@ -1070,7 +1182,7 @@ class LocalBotService : Service() {
                 val year = cal.get(Calendar.YEAR)
                 val doy = cal.get(Calendar.DAY_OF_YEAR)
                 val nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
-                val allEvents = store.schedule(botId)
+                val modDefaultThread = store.groupModeration(botId).defaultThreadId
                 val events = allEvents
                     .filter { e ->
                         e.enabled && (if (e.onceDate.isNotBlank()) e.onceDate == today else e.days.contains(dow))
@@ -1090,13 +1202,14 @@ class LocalBotService : Service() {
                     var markDone = true
                     val postText = e.pickVariant(doy)
                     val pm = e.parseMode.ifBlank { null }
+                    val targetThread = e.threadId ?: if (e.toChannel || chatId < 0L) modDefaultThread else null
                     if (e.toChannel) {
                         // Пост в канал публикаций (например, дайджест 10:20/20:40).
                         val channel = store.channelId(botId)
                         if (channel.isBlank()) {
                             BotLog.log(botId, "⚠️ Событие ${e.timeLabel()} в канал, но канал не задан")
                         } else {
-                            val res = api.sendTo(channel, postText, e.menu.withIds(), parseMode = pm, messageThreadId = e.threadId)
+                            val res = api.sendTo(channel, postText, e.menu.withIds(), parseMode = pm, messageThreadId = targetThread)
                             if (res.isSuccess) {
                                 BotLog.log(botId, "📢 Пост в канал $channel: ${postText.take(60)}")
                             } else {
@@ -1112,9 +1225,9 @@ class LocalBotService : Service() {
                                 }
                             }
                         }
-                    } else {
+                    } else if (chatId != 0L) {
                         withTyping(api, store, botId, chatId)
-                        val res = api.sendMessage(chatId, postText, inlineMenu = e.menu.withIds(), parseMode = pm, messageThreadId = e.threadId)
+                        val res = api.sendMessage(chatId, postText, inlineMenu = e.menu.withIds(), parseMode = pm, messageThreadId = targetThread)
                         if (res.isSuccess) {
                             BotLog.log(botId, "⏰ Напоминание ${e.timeLabel()}: ${postText.take(60)}")
                         } else {
@@ -1129,6 +1242,8 @@ class LocalBotService : Service() {
                                 markDone = false
                             }
                         }
+                    } else {
+                        markDone = false
                     }
                     if (markDone) {
                         sentToday.add(key)

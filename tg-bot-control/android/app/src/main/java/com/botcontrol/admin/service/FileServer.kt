@@ -1,17 +1,18 @@
 package com.botcontrol.admin.service
 
+import com.botcontrol.admin.BotControlApp
 import com.botcontrol.admin.data.Brand
 import android.content.Context
 import com.botcontrol.admin.data.BotFiles
 import fi.iki.elonen.NanoHTTPD
 import java.io.File
 import java.io.FileInputStream
+import kotlinx.coroutines.runBlocking
 
 /**
  * Файловый сервер приложения (NanoHTTPD, порт 8090): страница в локальной
- * Wi-Fi сети для загрузки и скачивания файлов ботов. Файлы попадают в
- * директорию бота: media / scripts / docs. Доступ без пароля — только
- * локальная сеть, поэтому сервер включается вручную и гасится сам.
+ * Wi-Fi сети для загрузки и скачивания файлов ботов + опциональный локальный
+ * Webhook-приёмник Telegram (`POST /telegram-webhook/<botId>`).
  */
 class FileServer(context: Context) : NanoHTTPD(PORT) {
 
@@ -21,6 +22,7 @@ class FileServer(context: Context) : NanoHTTPD(PORT) {
         val uri = session.uri.orEmpty()
         return try {
             when {
+                session.method == Method.POST && uri.startsWith("/telegram-webhook/") -> webhook(session, uri)
                 session.method == Method.POST && uri == "/upload" -> upload(session)
                 uri == "/delete" -> delete(session)
                 uri.startsWith("/file/") -> download(uri.removePrefix("/file/"))
@@ -118,6 +120,27 @@ class FileServer(context: Context) : NanoHTTPD(PORT) {
     }
 
     // ---------- действия ----------
+
+    private fun webhook(session: IHTTPSession, uri: String): Response {
+        val botId = uri.removePrefix("/telegram-webhook/").trim('/').toLongOrNull()
+            ?: return notFound()
+        val store = (appContext as? BotControlApp)?.localStore
+        val expectedSecret = if (store != null) runBlocking { store.webhookSecret(botId) } else ""
+        if (expectedSecret.isNotBlank()) {
+            val got = session.headers["x-telegram-bot-api-secret-token"].orEmpty()
+            if (got != expectedSecret) {
+                return newFixedLengthResponse(Response.Status.FORBIDDEN, "text/plain; charset=utf-8", "forbidden")
+            }
+        }
+        val files = HashMap<String, String>()
+        session.parseBody(files)
+        val raw = files["postData"].orEmpty()
+        if (raw.isBlank()) {
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain; charset=utf-8", "empty body")
+        }
+        WebhookQueue.enqueue(botId, raw)
+        return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"ok\":true}")
+    }
 
     private fun upload(session: IHTTPSession): Response {
         val files = HashMap<String, String>()

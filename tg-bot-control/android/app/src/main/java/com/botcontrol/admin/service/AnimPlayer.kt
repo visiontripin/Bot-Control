@@ -43,12 +43,13 @@ object AnimPlayer {
         packItems: List<String>,
         menu: List<InlineBtn>,
         editMessageId: Int? = null,
+        messageThreadId: Int? = null,
     ) {
         val key = "$botId:$chatId"
         jobs.remove(key)?.cancel()
         val job = scope.launch {
             try {
-                run(api, botId, chatId, spec, user, packItems, menu, editMessageId)
+                run(api, botId, chatId, spec, user, packItems, menu, editMessageId, messageThreadId)
             } finally {
                 jobs.remove(key, coroutineContext[Job])
             }
@@ -65,6 +66,7 @@ object AnimPlayer {
         packItems: List<String>,
         menu: List<InlineBtn>,
         editMessageId: Int?,
+        messageThreadId: Int?,
     ) {
         val finalText = Anim.final(spec, user, packItems)
         if (Anim.isPhotoAnim(spec)) {
@@ -84,7 +86,13 @@ object AnimPlayer {
 
         suspend fun sendNew(text: String, withMenu: Boolean): Int? {
             val res = callWithRateLimitRetry(botId) {
-                api.sendMessageForId(chatId, fmt(text), mode, if (withMenu) menu else emptyList())
+                api.sendMessageForId(
+                    chatId = chatId,
+                    text = fmt(text),
+                    parseMode = mode,
+                    inlineMenu = if (withMenu) menu else emptyList(),
+                    messageThreadId = messageThreadId,
+                )
             }
             res.onFailure { BotLog.log(botId, "❌ Анимация: первый кадр не отправлен: ${it.message?.take(160)}") }
             return res.getOrNull()?.takeIf { it > 0 }

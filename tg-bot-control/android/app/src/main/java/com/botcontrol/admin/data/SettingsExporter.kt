@@ -520,6 +520,7 @@ object SettingsExporter {
         if (opts.silent) append(", disable_notification=True")
         if (opts.protectContent) append(", protect_content=True")
         if (opts.replyTo) append(", reply_to_message_id=msg.message_id")
+        if (opts.targetThreadId != null && opts.targetThreadId > 0) append(", message_thread_id=${opts.targetThreadId}")
     }
 
     /**
