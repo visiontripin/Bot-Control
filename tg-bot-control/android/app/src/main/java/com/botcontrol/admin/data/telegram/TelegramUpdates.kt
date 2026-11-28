@@ -38,6 +38,62 @@ data class TgMessage(
     val isForumTopic: Boolean = false,
     val newMembers: List<TgChatParticipant> = emptyList(),
     val leftMember: TgChatParticipant? = null,
+    /** Stage 4: метаданные вложений, оплата Stars и данные Telegram Mini App. */
+    val mimeType: String = "",
+    val fileName: String = "",
+    val fileSize: Long = 0L,
+    val successfulPayment: TgSuccessfulPayment? = null,
+    val webAppData: TgWebAppData? = null,
+)
+
+/** Входящий inline-запрос (@bot запрос). */
+data class TgInlineQuery(
+    val updateId: Long,
+    val id: String,
+    val userId: Long = 0L,
+    val firstName: String = "",
+    val username: String = "",
+    val query: String = "",
+    val chatType: String = "",
+    val offset: String = "",
+)
+
+/** Выбранный пользователем результат inline-режима (chosen_inline_result). */
+data class TgChosenInlineResult(
+    val updateId: Long,
+    val resultId: String,
+    val userId: Long = 0L,
+    val firstName: String = "",
+    val username: String = "",
+    val inlineMessageId: String = "",
+    val query: String = "",
+)
+
+/** Запрос подтверждения перед оплатой (pre_checkout_query). */
+data class TgPreCheckoutQuery(
+    val updateId: Long,
+    val id: String,
+    val userId: Long = 0L,
+    val firstName: String = "",
+    val username: String = "",
+    val currency: String = "",
+    val totalAmount: Int = 0,
+    val invoicePayload: String = "",
+)
+
+/** Успешный платёж (message.successful_payment), включая Telegram Stars (XTR). */
+data class TgSuccessfulPayment(
+    val currency: String = "",
+    val totalAmount: Int = 0,
+    val invoicePayload: String = "",
+    val telegramPaymentChargeId: String = "",
+    val providerPaymentChargeId: String = "",
+)
+
+/** Данные, отправленные пользователем из Telegram Mini App (message.web_app_data). */
+data class TgWebAppData(
+    val data: String = "",
+    val buttonText: String = "",
 )
 
 /** Нажатие inline-кнопки (callback_query). */
@@ -122,11 +178,15 @@ data class TgUpdatesBatch(
     val reactions: List<TgMessageReaction> = emptyList(),
     val pollUpdates: List<TgPollUpdate> = emptyList(),
     val pollAnswers: List<TgPollAnswer> = emptyList(),
+    val inlineQueries: List<TgInlineQuery> = emptyList(),
+    val chosenInlineResults: List<TgChosenInlineResult> = emptyList(),
+    val preCheckoutQueries: List<TgPreCheckoutQuery> = emptyList(),
     val nextOffset: Long = 0L,
 ) {
     val totalCount: Int
         get() = messages.size + callbacks.size + memberUpdates.size +
-            joinRequests.size + reactions.size + pollUpdates.size + pollAnswers.size
+            joinRequests.size + reactions.size + pollUpdates.size + pollAnswers.size +
+            inlineQueries.size + chosenInlineResults.size + preCheckoutQueries.size
 }
 
 /** Сведения о чате/группе/канале (getChat). */
@@ -300,7 +360,10 @@ object TelegramUpdatesParser {
         "edited_message",
         "channel_post",
         "edited_channel_post",
+        "inline_query",
+        "chosen_inline_result",
         "callback_query",
+        "pre_checkout_query",
         "my_chat_member",
         "chat_member",
         "chat_join_request",
@@ -339,6 +402,9 @@ object TelegramUpdatesParser {
         val reactions = mutableListOf<TgMessageReaction>()
         val pollUpdates = mutableListOf<TgPollUpdate>()
         val pollAnswers = mutableListOf<TgPollAnswer>()
+        val inlineQueries = mutableListOf<TgInlineQuery>()
+        val chosenInlineResults = mutableListOf<TgChosenInlineResult>()
+        val preCheckoutQueries = mutableListOf<TgPreCheckoutQuery>()
         var maxId = if (offset > 0) offset - 1 else 0L
 
         for (u in updates) {
@@ -368,6 +434,54 @@ object TelegramUpdatesParser {
                         )
                     )
                 }
+                continue
+            }
+
+            obj(u["inline_query"])?.let { iq ->
+                val from = obj(iq["from"])
+                inlineQueries.add(
+                    TgInlineQuery(
+                        updateId = updateId,
+                        id = str(iq, "id"),
+                        userId = long(from, "id"),
+                        firstName = str(from, "first_name"),
+                        username = str(from, "username"),
+                        query = str(iq, "query"),
+                        chatType = str(iq, "chat_type"),
+                        offset = str(iq, "offset"),
+                    )
+                )
+                continue
+            }
+            obj(u["chosen_inline_result"])?.let { cir ->
+                val from = obj(cir["from"])
+                chosenInlineResults.add(
+                    TgChosenInlineResult(
+                        updateId = updateId,
+                        resultId = str(cir, "result_id"),
+                        userId = long(from, "id"),
+                        firstName = str(from, "first_name"),
+                        username = str(from, "username"),
+                        inlineMessageId = str(cir, "inline_message_id"),
+                        query = str(cir, "query"),
+                    )
+                )
+                continue
+            }
+            obj(u["pre_checkout_query"])?.let { pcq ->
+                val from = obj(pcq["from"])
+                preCheckoutQueries.add(
+                    TgPreCheckoutQuery(
+                        updateId = updateId,
+                        id = str(pcq, "id"),
+                        userId = long(from, "id"),
+                        firstName = str(from, "first_name"),
+                        username = str(from, "username"),
+                        currency = str(pcq, "currency"),
+                        totalAmount = int(pcq, "total_amount"),
+                        invoicePayload = str(pcq, "invoice_payload"),
+                    )
+                )
                 continue
             }
 
@@ -459,6 +573,9 @@ object TelegramUpdatesParser {
             reactions = reactions,
             pollUpdates = pollUpdates,
             pollAnswers = pollAnswers,
+            inlineQueries = inlineQueries,
+            chosenInlineResults = chosenInlineResults,
+            preCheckoutQueries = preCheckoutQueries,
             nextOffset = maxId + 1,
         )
     }
@@ -516,6 +633,8 @@ object TelegramUpdatesParser {
         val message = obj(u[field]) ?: return null
         val chat = obj(message["chat"]) ?: return null
         val kind = when {
+            message["successful_payment"] != null -> "оплата"
+            message["web_app_data"] != null -> "mini_app"
             message["text"] is String -> ""
             message["photo"] != null -> "фото"
             message["sticker"] != null -> "стикер"
@@ -530,19 +649,40 @@ object TelegramUpdatesParser {
             message["new_chat_members"] != null || message["left_chat_member"] != null -> ""
             else -> "вложение"
         }
-        val photoId = if (kind == "фото") {
-            obj(arr(message["photo"])?.lastOrNull())?.let { str(it, "file_id") } ?: ""
-        } else ""
-        val attachFileId = when (kind) {
-            "фото" -> photoId
-            "стикер" -> str(obj(message["sticker"]), "file_id")
-            "гифка" -> str(obj(message["animation"]), "file_id")
-            "файл" -> str(obj(message["document"]), "file_id")
-            "видео" -> str(obj(message["video"]), "file_id")
-            "голосовое" -> str(obj(message["voice"]), "file_id")
-            "аудио" -> str(obj(message["audio"]), "file_id")
-            "видеосообщение" -> str(obj(message["video_note"]), "file_id")
-            else -> ""
+        val largestPhoto = if (kind == "фото") obj(arr(message["photo"])?.lastOrNull()) else null
+        val photoId = str(largestPhoto, "file_id")
+        val mediaObj = when (kind) {
+            "фото" -> largestPhoto
+            "стикер" -> obj(message["sticker"])
+            "гифка" -> obj(message["animation"])
+            "файл" -> obj(message["document"])
+            "видео" -> obj(message["video"])
+            "голосовое" -> obj(message["voice"])
+            "аудио" -> obj(message["audio"])
+            "видеосообщение" -> obj(message["video_note"])
+            else -> null
+        }
+        val attachFileId = str(mediaObj, "file_id")
+        val attachMime = when (kind) {
+            "фото" -> "image/jpeg"
+            else -> str(mediaObj, "mime_type")
+        }
+        val attachName = str(mediaObj, "file_name")
+        val attachSize = long(mediaObj, "file_size")
+        val successfulPayment = obj(message["successful_payment"])?.let { sp ->
+            TgSuccessfulPayment(
+                currency = str(sp, "currency"),
+                totalAmount = int(sp, "total_amount"),
+                invoicePayload = str(sp, "invoice_payload"),
+                telegramPaymentChargeId = str(sp, "telegram_payment_charge_id"),
+                providerPaymentChargeId = str(sp, "provider_payment_charge_id"),
+            )
+        }
+        val webAppData = obj(message["web_app_data"])?.let { wad ->
+            TgWebAppData(
+                data = str(wad, "data"),
+                buttonText = str(wad, "button_text"),
+            )
         }
         val from = obj(message["from"])
         val replyMsg = obj(message["reply_to_message"])
@@ -580,6 +720,11 @@ object TelegramUpdatesParser {
             isForumTopic = bool(chat, "is_forum") || bool(message, "is_topic_message"),
             newMembers = newMembers,
             leftMember = leftMember,
+            mimeType = attachMime,
+            fileName = attachName,
+            fileSize = attachSize,
+            successfulPayment = successfulPayment,
+            webAppData = webAppData,
         )
     }
 }

@@ -1676,6 +1676,268 @@ class TelegramApi(private val token: String) {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Stage 4: Inline-режим, Telegram Stars (XTR), Mini Apps
+    // ------------------------------------------------------------------
+
+    /** Ответить на inline_query списком текстовых/HTML-карточек. */
+    suspend fun answerInlineQuery(
+        inlineQueryId: String,
+        articles: List<com.botcontrol.admin.data.BuiltInlineArticle>,
+        cacheTimeSec: Int = 10,
+        isPersonal: Boolean = true,
+        nextOffset: String = "",
+        switchPmText: String = "",
+        switchPmParameter: String = "start",
+    ): Result<Unit> = withShortRateLimitRetry {
+        val rem = TelegramRateLimit.remainingCooldownSec(token, "inline")
+        if (rem > 0L) {
+            return@withShortRateLimitRetry Result.failure(
+                TelegramApiException("answerInlineQuery", 429, "Too Many Requests", rem, "answerInlineQuery HTTP 429: подождите ещё $rem с")
+            )
+        }
+        try {
+            val results = articles.take(50).map { a ->
+                val content = mutableMapOf<String, Any>(
+                    "message_text" to a.messageText.take(4096),
+                )
+                if (a.parseMode.isNotBlank()) content["parse_mode"] = a.parseMode
+                val item = mutableMapOf<String, Any>(
+                    "type" to "article",
+                    "id" to utf8Trim(a.id, 64).ifBlank { "inl" },
+                    "title" to a.title.take(128),
+                    "input_message_content" to content,
+                )
+                if (a.description.isNotBlank()) item["description"] = a.description.take(256)
+                item
+            }
+            val map = mutableMapOf<String, Any>(
+                "inline_query_id" to inlineQueryId,
+                "results" to results,
+                "cache_time" to cacheTimeSec.coerceIn(0, 3600),
+                "is_personal" to isPersonal,
+            )
+            if (nextOffset.isNotBlank()) map["next_offset"] = nextOffset.take(64)
+            if (switchPmText.isNotBlank()) {
+                map["button"] = mapOf(
+                    "text" to switchPmText.take(64),
+                    "start_parameter" to switchPmParameter.take(64).ifBlank { "start" },
+                )
+            }
+            val payload = Gson().toJson(map).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("answerInlineQuery")).post(payload).build()) { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(httpFailure("answerInlineQuery", "inline", resp, resp.body?.string().orEmpty()))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    /** Отправить счёт в чат (по умолчанию Telegram Stars: currency = "XTR", provider_token = ""). */
+    suspend fun sendInvoice(
+        chatId: Long,
+        title: String,
+        description: String,
+        payloadId: String,
+        amount: Int,
+        currency: String = "XTR",
+        providerToken: String = "",
+        photoUrl: String = "",
+        startParameter: String = "",
+        messageThreadId: Int? = null,
+    ): Result<Int> = withShortRateLimitRetry {
+        val bucket = "chat:$chatId"
+        val rem = TelegramRateLimit.remainingCooldownSec(token, bucket)
+        if (rem > 0L) {
+            return@withShortRateLimitRetry Result.failure(
+                TelegramApiException("sendInvoice", 429, "Too Many Requests", rem, "sendInvoice HTTP 429: подождите ещё $rem с")
+            )
+        }
+        try {
+            val map = mutableMapOf<String, Any>(
+                "chat_id" to chatId,
+                "title" to title.trim().take(32).ifBlank { "Товар" },
+                "description" to description.trim().take(255).ifBlank { title.trim().take(255).ifBlank { "Цифровой доступ" } },
+                "payload" to utf8Trim(payloadId, 128).ifBlank { "prod_default" },
+                "currency" to currency.ifBlank { "XTR" },
+                "prices" to listOf(mapOf("label" to title.trim().take(32).ifBlank { "Оплата" }, "amount" to amount.coerceAtLeast(1))),
+            )
+            if (providerToken.isNotBlank()) map["provider_token"] = providerToken.trim()
+            else if (!currency.equals("XTR", ignoreCase = true)) map["provider_token"] = ""
+            if (photoUrl.isNotBlank()) map["photo_url"] = photoUrl.trim()
+            if (startParameter.isNotBlank()) map["start_parameter"] = startParameter.trim().take(64)
+            if (messageThreadId != null && messageThreadId > 0) map["message_thread_id"] = messageThreadId
+            val payload = Gson().toJson(map).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("sendInvoice")).post(payload).build()) { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) Result.failure(httpFailure("sendInvoice", bucket, resp, text))
+                else Result.success(parse("sendInvoice", text) { it.getAsJsonObject("result").get("message_id").asInt })
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    /** Создать платёжную ссылку (createInvoiceLink) для Telegram Stars (XTR) или провайдера. */
+    suspend fun createInvoiceLink(
+        title: String,
+        description: String,
+        payloadId: String,
+        amount: Int,
+        currency: String = "XTR",
+        providerToken: String = "",
+        photoUrl: String = "",
+    ): Result<String> = withShortRateLimitRetry {
+        val rem = TelegramRateLimit.remainingCooldownSec(token, "invoice")
+        if (rem > 0L) {
+            return@withShortRateLimitRetry Result.failure(
+                TelegramApiException("createInvoiceLink", 429, "Too Many Requests", rem, "createInvoiceLink HTTP 429: подождите ещё $rem с")
+            )
+        }
+        try {
+            val map = mutableMapOf<String, Any>(
+                "title" to title.trim().take(32).ifBlank { "Товар" },
+                "description" to description.trim().take(255).ifBlank { "Цифровой доступ" },
+                "payload" to utf8Trim(payloadId, 128).ifBlank { "prod_default" },
+                "currency" to currency.ifBlank { "XTR" },
+                "prices" to listOf(mapOf("label" to title.trim().take(32).ifBlank { "Оплата" }, "amount" to amount.coerceAtLeast(1))),
+            )
+            if (providerToken.isNotBlank()) map["provider_token"] = providerToken.trim()
+            if (photoUrl.isNotBlank()) map["photo_url"] = photoUrl.trim()
+            val payload = Gson().toJson(map).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("createInvoiceLink")).post(payload).build()) { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) Result.failure(httpFailure("createInvoiceLink", "invoice", resp, text))
+                else Result.success(parse("createInvoiceLink", text) { it.get("result")?.asString.orEmpty() })
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    /** Подтвердить или отклонить платёж перед списанием (answerPreCheckoutQuery). */
+    suspend fun answerPreCheckoutQuery(
+        preCheckoutQueryId: String,
+        ok: Boolean = true,
+        errorMessage: String = "",
+    ): Result<Unit> = withShortRateLimitRetry {
+        try {
+            val map = mutableMapOf<String, Any>(
+                "pre_checkout_query_id" to preCheckoutQueryId,
+                "ok" to ok,
+            )
+            if (!ok && errorMessage.isNotBlank()) map["error_message"] = errorMessage.take(255)
+            val payload = Gson().toJson(map).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("answerPreCheckoutQuery")).post(payload).build()) { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(httpFailure("answerPreCheckoutQuery", "invoice", resp, resp.body?.string().orEmpty()))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    /** Возврат платежа в Telegram Stars (refundStarPayment). */
+    suspend fun refundStarPayment(
+        userId: Long,
+        telegramPaymentChargeId: String,
+    ): Result<Unit> = withShortRateLimitRetry {
+        val rem = TelegramRateLimit.remainingCooldownSec(token, "invoice")
+        if (rem > 0L) {
+            return@withShortRateLimitRetry Result.failure(
+                TelegramApiException("refundStarPayment", 429, "Too Many Requests", rem, "refundStarPayment HTTP 429: подождите ещё $rem с")
+            )
+        }
+        try {
+            val payload = Gson().toJson(
+                mapOf(
+                    "user_id" to userId,
+                    "telegram_payment_charge_id" to telegramPaymentChargeId,
+                )
+            ).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("refundStarPayment")).post(payload).build()) { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(httpFailure("refundStarPayment", "invoice", resp, resp.body?.string().orEmpty()))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    /** Ответить на запрос из Mini App (answerWebAppQuery). */
+    suspend fun answerWebAppQuery(
+        webAppQueryId: String,
+        title: String,
+        messageText: String,
+        parseMode: String? = null,
+    ): Result<Unit> = withShortRateLimitRetry {
+        try {
+            val content = mutableMapOf<String, Any>("message_text" to messageText.take(4096))
+            if (!parseMode.isNullOrBlank()) content["parse_mode"] = parseMode
+            val resultObj = mapOf(
+                "type" to "article",
+                "id" to "webapp_${webAppQueryId.take(48)}",
+                "title" to title.take(128).ifBlank { "Mini App" },
+                "input_message_content" to content,
+            )
+            val payload = Gson().toJson(
+                mapOf(
+                    "web_app_query_id" to webAppQueryId,
+                    "result" to resultObj,
+                )
+            ).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("answerWebAppQuery")).post(payload).build()) { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(httpFailure("answerWebAppQuery", "webapp", resp, resp.body?.string().orEmpty()))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    /** Установить кнопку меню чата на открытие Mini App (setChatMenuButton) или сбросить по умолчанию. */
+    suspend fun setChatMenuButtonWebApp(
+        chatId: Long? = null,
+        text: String,
+        webAppUrl: String,
+    ): Result<Unit> = withShortRateLimitRetry {
+        try {
+            val menuBtn: Map<String, Any> = if (webAppUrl.isBlank()) {
+                mapOf("type" to "commands")
+            } else {
+                mapOf(
+                    "type" to "web_app",
+                    "text" to text.trim().take(64).ifBlank { "Открыть" },
+                    "web_app" to mapOf("url" to webAppUrl.trim()),
+                )
+            }
+            val map = mutableMapOf<String, Any>("menu_button" to menuBtn)
+            if (chatId != null && chatId != 0L) map["chat_id"] = chatId
+            val payload = Gson().toJson(map).toRequestBody(json)
+            executeCall(fastClient, Request.Builder().url(url("setChatMenuButton")).post(payload).build()) { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(httpFailure("setChatMenuButton", "menu", resp, resp.body?.string().orEmpty()))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
     /** Безопасное усечение строки до maxBytes в UTF-8 (Telegram callback_data <= 64 байт). */
     private fun utf8Trim(s: String, maxBytes: Int = 64): String {
         if (s.toByteArray(Charsets.UTF_8).size <= maxBytes) return s

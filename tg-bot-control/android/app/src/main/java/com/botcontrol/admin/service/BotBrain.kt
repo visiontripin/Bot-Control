@@ -101,7 +101,7 @@ object BotBrain {
         else pack.items.random()
     }
 
-    /** Запуск JS-скрипта с загрузкой и сохранением персистентного `db` в Room. */
+    /** Запуск JS-скрипта с загрузкой и сохранением персистентного `db` в Room и `http` (allowlist). */
     suspend fun runScriptWithDb(
         app: BotControlApp,
         botId: Long,
@@ -116,7 +116,9 @@ object BotBrain {
         val userInit = app.repository.kvList(botId, userScope)
         val globalInit = app.repository.kvList(botId, "global")
         val dbSession = ScriptDbSession(userInit, globalInit)
-        val res = BotScript.run(source, user, text, chatId, ctx, dbSession)
+        val httpCfg = app.localStore.integrationsConfig(botId)
+        val httpBridge = SafeHttpClient.bridgeFor(httpCfg)
+        val res = BotScript.run(source, user, text, chatId, ctx, dbSession, httpBridge)
         dbSession.userWrites.forEach { (k, v) -> app.repository.kvSet(botId, userScope, k, v) }
         dbSession.userDeletes.forEach { k -> app.repository.kvDelete(botId, userScope, k) }
         dbSession.globalWrites.forEach { (k, v) -> app.repository.kvSet(botId, "global", k, v) }
@@ -176,7 +178,7 @@ object BotBrain {
                     val q = if (rule.type == "command") {
                         BotMatcher.extractCommandArgsRaw(text).ifBlank { text }
                     } else text
-                    llmReply(context, store, botId, chatId, firstName, q, onLlmStart, trace)
+                    llmReply(context, store, botId, chatId, firstName, q, onLlmStart, trace, msgCtx)
                         .copy(options = opts, replyToMessageId = replyToId)
                 }
                 "script" -> {
@@ -314,7 +316,7 @@ object BotBrain {
                     "🤖 ИИ не настроен: «ИИ → Модели ИИ» → скачай модель и выбери её.")
             } else {
                 trace?.invoke("🤖 Сценарий /chat — спрашиваю ИИ…")
-                llmReply(context, store, botId, chatId, firstName, question, onLlmStart, trace)
+                llmReply(context, store, botId, chatId, firstName, question, onLlmStart, trace, msgCtx)
             }
         }
 
@@ -350,7 +352,24 @@ object BotBrain {
         if (store.aiModel(botId).isBlank()) {
             return BotDecision("ИИ (нет модели)", "🤖 Модель ИИ не выбрана в «ИИ → Модели ИИ».")
         }
-        return llmReply(context, store, botId, chatId, firstName, promptText, onLlmStart, null)
+        return llmReply(context, store, botId, chatId, firstName, promptText, onLlmStart, null, null)
+    }
+
+    private fun enrichPromptWithMedia(text: String, ctx: MessageCtx?): String {
+        if (ctx == null || (ctx.kind.isBlank() && ctx.localMediaPath.isBlank() && ctx.fileId.isBlank())) {
+            return text
+        }
+        val meta = buildList {
+            if (ctx.kind.isNotBlank()) add("тип=${ctx.kind}")
+            if (ctx.fileName.isNotBlank()) add("имя=${ctx.fileName}")
+            if (ctx.mimeType.isNotBlank()) add("mime=${ctx.mimeType}")
+            if (ctx.fileSize > 0L) add("размер=${ctx.fileSize}Б")
+            if (ctx.localMediaPath.isNotBlank()) add("локальный_файл=${ctx.localMediaPath}")
+            else if (ctx.fileId.isNotBlank()) add("file_id=${ctx.fileId}")
+            if (ctx.caption.isNotBlank() && ctx.caption != text) add("подпись=${ctx.caption}")
+        }
+        if (meta.isEmpty()) return text
+        return "$text\n\n[Вложение: ${meta.joinToString(", ")}]"
     }
 
     private suspend fun llmReply(
@@ -362,23 +381,29 @@ object BotBrain {
         text: String,
         onLlmStart: (suspend () -> Unit)?,
         trace: ((String) -> Unit)?,
+        msgCtx: MessageCtx? = null,
     ): BotDecision {
         val model = store.aiModel(botId)
         if (!store.llmEnabled(botId) || model.isBlank()) {
             trace?.invoke("ИИ выключен или модель не выбрана («Модели ИИ» → выбрать)")
             return fallback(store, botId)
         }
+        val integ = store.integrationsConfig(botId)
+        val userInput = if (integ.passIncomingMediaToLlm) enrichPromptWithMedia(text, msgCtx) else text
         trace?.invoke("🤖 Спрашиваю ИИ (модель: $model)…")
+        if (integ.passIncomingMediaToLlm && msgCtx?.localMediaPath?.isNotBlank() == true) {
+            trace?.invoke("📎 Вложение для ИИ: ${msgCtx.kind} → ${msgCtx.localMediaPath}")
+        }
         onLlmStart?.invoke()
         val history = ChatMemory.history(botId, chatId)
         if (history.isNotEmpty()) trace?.invoke("Контекст: ${history.size} прошлых реплик")
-        val prompt = DialogPrompt.build(store.systemPrompt(botId), history, text)
+        val prompt = DialogPrompt.build(store.systemPrompt(botId), history, userInput)
         val params = engineParams(store, botId)
         return DeviceLlm.ensureLoaded(context, model, params)
             .mapCatching { DeviceLlm.generate("", prompt, params).getOrThrow() }
             .fold(
                 onSuccess = { reply ->
-                    ChatMemory.remember(botId, chatId, text, reply, store.historyLimit(botId))
+                    ChatMemory.remember(botId, chatId, userInput, reply, store.historyLimit(botId))
                     trace?.invoke("ИИ ответил (${reply.length} симв.)")
                     resolveLlmProblem(botId)
                     BotDecision("ИИ", reply)

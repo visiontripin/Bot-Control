@@ -63,6 +63,24 @@ class ScriptDbSession(
     fun globalSnapshot(): Map<String, String> = globalMap.toMap()
 }
 
+/** Ответ внешнего HTTP-запроса для JS-скрипта (`http.get` / `http.post`). */
+data class ScriptHttpResponse(
+    val ok: Boolean = false,
+    val status: Int = 0,
+    val body: String = "",
+    val error: String = "",
+)
+
+/** Мост исходящих HTTP-запросов из JS-песочницы (разрешены только домены белого списка). */
+interface ScriptHttpBridge {
+    fun request(
+        method: String,
+        url: String,
+        body: String? = null,
+        headers: Map<String, String> = emptyMap(),
+    ): ScriptHttpResponse
+}
+
 /**
  * Local script engine for bot logic («выполнение скриптов по кнопке»).
  * JavaScript (Mozilla Rhino, interpreter mode) in a sandbox:
@@ -72,9 +90,11 @@ class ScriptDbSession(
  * Script contract:
  *   function handle(e) { ... return "text reply" }
  * where:
- *   e  = { user, text, chatId, username, userId, chatType, args, messageId, replyToText, kind, fileId }
- *   db = { get(k, def?), set(k, v), del(k), incr(k, d?), keys(),
- *          getGlobal(k, def?), setGlobal(k, v), delGlobal(k), incrGlobal(k, d?), globalKeys() }
+ *   e    = { user, text, chatId, username, userId, chatType, args, messageId,
+ *            replyToText, kind, fileId, caption, mimeType, fileName, fileSize, localPath }
+ *   db   = { get(k, def?), set(k, v), del(k), incr(k, d?), keys(),
+ *            getGlobal(k, def?), setGlobal(k, v), delGlobal(k), incrGlobal(k, d?), globalKeys() }
+ *   http = { get(url, headers?), post(url, bodyOrObj?, headers?) }
  */
 object BotScript {
 
@@ -172,6 +192,71 @@ object BotScript {
         ScriptableObject.putProperty(scope, "db", dbObj)
     }
 
+    private fun attachHttp(cx: Context, scope: Scriptable, bridge: ScriptHttpBridge?) {
+        val httpObj = cx.newObject(scope)
+
+        fun argStr(args: Array<out Any?>, idx: Int): String? {
+            val v = args.getOrNull(idx)
+            if (v == null || v === org.mozilla.javascript.Undefined.instance) return null
+            return if (v is Scriptable) {
+                val jsonMod = ScriptableObject.getProperty(scope, "JSON") as? Scriptable
+                val stringifyFn = jsonMod?.let { ScriptableObject.getProperty(it, "stringify") as? Function }
+                if (stringifyFn != null) {
+                    Context.toString(stringifyFn.call(cx, scope, jsonMod, arrayOf(v)))
+                } else Context.toString(v)
+            } else Context.toString(v)
+        }
+
+        fun argHeaders(args: Array<out Any?>, idx: Int): Map<String, String> {
+            val v = args.getOrNull(idx) as? Scriptable ?: return emptyMap()
+            val out = linkedMapOf<String, String>()
+            for (id in v.ids) {
+                val k = id?.toString() ?: continue
+                val raw = v.get(k, v)
+                if (raw != null && raw !== org.mozilla.javascript.Undefined.instance) {
+                    out[k] = Context.toString(raw)
+                }
+            }
+            return out
+        }
+
+        fun toJsResp(c: Context, s: Scriptable, r: ScriptHttpResponse): Scriptable {
+            val obj = c.newObject(s)
+            ScriptableObject.putProperty(obj, "ok", r.ok)
+            ScriptableObject.putProperty(obj, "status", r.status)
+            ScriptableObject.putProperty(obj, "body", r.body)
+            ScriptableObject.putProperty(obj, "error", r.error)
+            val jsonVal: Any? = if (r.body.trimStart().let { it.startsWith("{") || it.startsWith("[") }) {
+                runCatching {
+                    val jsonMod = ScriptableObject.getProperty(s, "JSON") as? Scriptable
+                    val parseFn = jsonMod?.let { ScriptableObject.getProperty(it, "parse") as? Function }
+                    parseFn?.call(c, s, jsonMod, arrayOf(r.body))
+                }.getOrNull()
+            } else null
+            ScriptableObject.putProperty(obj, "json", jsonVal)
+            return obj
+        }
+
+        fun perform(c: Context, s: Scriptable, method: String, url: String?, body: String?, headers: Map<String, String>): Scriptable {
+            if (url.isNullOrBlank()) {
+                return toJsResp(c, s, ScriptHttpResponse(ok = false, error = "не указан URL"))
+            }
+            if (bridge == null) {
+                return toJsResp(c, s, ScriptHttpResponse(ok = false, error = "HTTP-мост не настроен для этого контекста"))
+            }
+            val resp = bridge.request(method, url, body, headers)
+            return toJsResp(c, s, resp)
+        }
+
+        ScriptableObject.putProperty(httpObj, "get", jsFn { c, s, args ->
+            perform(c, s, "GET", argStr(args, 0), null, argHeaders(args, 1))
+        })
+        ScriptableObject.putProperty(httpObj, "post", jsFn { c, s, args ->
+            perform(c, s, "POST", argStr(args, 0), argStr(args, 1), argHeaders(args, 2))
+        })
+        ScriptableObject.putProperty(scope, "http", httpObj)
+    }
+
     fun run(
         source: String,
         user: String,
@@ -179,6 +264,7 @@ object BotScript {
         chatId: Long,
         ctx: MessageCtx? = null,
         dbSession: ScriptDbSession? = null,
+        httpBridge: ScriptHttpBridge? = null,
     ): Result<String> {
         val cx = Context.enter()
         try {
@@ -186,6 +272,7 @@ object BotScript {
             cx.setClassShutter(ClassShutter { false }) // no java.* from scripts
             val scope = cx.initSafeStandardObjects()
             attachDb(cx, scope, dbSession ?: ScriptDbSession())
+            attachHttp(cx, scope, httpBridge)
             cx.evaluateString(scope, source, "bot_script", 1, null)
             val fn = scope.get("handle", scope) as? Function
                 ?: return Result.failure(IllegalStateException("В скрипте нет функции handle(e)"))
@@ -201,6 +288,11 @@ object BotScript {
             ScriptableObject.putProperty(arg, "replyToText", ctx?.replyToText.orEmpty())
             ScriptableObject.putProperty(arg, "kind", ctx?.kind.orEmpty())
             ScriptableObject.putProperty(arg, "fileId", ctx?.fileId.orEmpty())
+            ScriptableObject.putProperty(arg, "caption", ctx?.caption.orEmpty())
+            ScriptableObject.putProperty(arg, "mimeType", ctx?.mimeType.orEmpty())
+            ScriptableObject.putProperty(arg, "fileName", ctx?.fileName.orEmpty())
+            ScriptableObject.putProperty(arg, "fileSize", (ctx?.fileSize ?: 0L).toDouble())
+            ScriptableObject.putProperty(arg, "localPath", ctx?.localMediaPath.orEmpty())
             val result = fn.call(cx, scope, scope, arrayOf(arg))
             return Result.success(Context.toString(result))
         } catch (e: Throwable) {

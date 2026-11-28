@@ -331,6 +331,8 @@ class LocalBotStore(context: Context) {
                 adminIdsKey(botId), reqChanKey(botId), reqChanLinkKey(botId), reqChanPromptKey(botId),
                 fsmKey(botId), listMaxKey(botId), listAlbumKey(botId),
                 groupModKey(botId), webhookSecretKey(botId),
+                inlineCfgKey(botId), productsKey(botId), ordersKey(botId),
+                webAppCfgKey(botId), integrationsCfgKey(botId),
             ).forEach { key -> it.remove(key) }
         }
     }
@@ -351,6 +353,76 @@ class LocalBotStore(context: Context) {
     private fun fsmKey(id: Long) = stringPreferencesKey("fsm_flows_$id")
     private fun groupModKey(id: Long) = stringPreferencesKey("group_mod_$id")
     private fun webhookSecretKey(id: Long) = stringPreferencesKey("webhook_secret_$id")
+
+    // ---------- Stage 4: Inline, Telegram Stars, Mini App, HTTP API (per-botId) ----------
+    private fun inlineCfgKey(id: Long) = stringPreferencesKey("inline_cfg_$id")
+    private fun productsKey(id: Long) = stringPreferencesKey("products_$id")
+    private fun ordersKey(id: Long) = stringPreferencesKey("star_orders_$id")
+    private fun webAppCfgKey(id: Long) = stringPreferencesKey("webapp_cfg_$id")
+    private fun integrationsCfgKey(id: Long) = stringPreferencesKey("integrations_cfg_$id")
+
+    suspend fun inlineConfig(botId: Long = -1L): InlineModeConfig {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[inlineCfgKey(id)].orEmpty() }.first()
+        return BotJson.inlineConfig(raw)
+    }
+
+    suspend fun setInlineConfig(value: InlineModeConfig, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[inlineCfgKey(id)] = BotJson.save(value) }
+    }
+
+    suspend fun digitalProducts(botId: Long = -1L): List<DigitalProduct> {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[productsKey(id)].orEmpty() }.first()
+        return BotJson.productList(raw)
+    }
+
+    suspend fun setDigitalProducts(value: List<DigitalProduct>, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[productsKey(id)] = BotJson.save(value.take(50)) }
+    }
+
+    suspend fun starOrders(botId: Long = -1L): List<StarOrder> {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[ordersKey(id)].orEmpty() }.first()
+        return BotJson.orderList(raw)
+    }
+
+    suspend fun addStarOrder(order: StarOrder, botId: Long = -1L) {
+        val id = resolveId(botId)
+        val current = starOrders(id)
+        val next = (listOf(order) + current).take(200)
+        appContext.localBotDataStore.edit { it[ordersKey(id)] = BotJson.save(next) }
+    }
+
+    suspend fun markOrderRefunded(chargeId: String, botId: Long = -1L) {
+        val id = resolveId(botId)
+        val next = starOrders(id).map { if (it.chargeId == chargeId) it.copy(refunded = true) else it }
+        appContext.localBotDataStore.edit { it[ordersKey(id)] = BotJson.save(next) }
+    }
+
+    suspend fun webAppConfig(botId: Long = -1L): WebAppConfig {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[webAppCfgKey(id)].orEmpty() }.first()
+        return BotJson.webAppConfig(raw)
+    }
+
+    suspend fun setWebAppConfig(value: WebAppConfig, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[webAppCfgKey(id)] = BotJson.save(value) }
+    }
+
+    suspend fun integrationsConfig(botId: Long = -1L): IntegrationsConfig {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[integrationsCfgKey(id)].orEmpty() }.first()
+        return BotJson.integrationsConfig(raw)
+    }
+
+    suspend fun setIntegrationsConfig(value: IntegrationsConfig, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[integrationsCfgKey(id)] = BotJson.save(value) }
+    }
 
     suspend fun adminIdsRaw(botId: Long = -1L): String {
         val id = resolveId(botId)

@@ -54,6 +54,7 @@ import com.botcontrol.admin.ui.screens.PacksScreen
 import com.botcontrol.admin.ui.screens.ScriptEditorScreen
 import com.botcontrol.admin.ui.screens.SettingsScreen
 import com.botcontrol.admin.ui.screens.SimulateScreen
+import com.botcontrol.admin.ui.screens.Stage4Screen
 import com.botcontrol.admin.ui.screens.UsersScreen
 import com.botcontrol.admin.ui.screens.WelcomeScreen
 import kotlinx.coroutines.launch
@@ -83,6 +84,7 @@ object Routes {
     const val BROADCAST = "broadcast"
     const val FSM = "fsm"
     const val GROUPS = "groups"
+    const val STAGE4 = "stage4"
     const val DEV_LOG = "devlog"
     const val EXPORT = "export"
     const val FILES = "files"
@@ -272,6 +274,9 @@ fun NavGraph(
         }
         composable(Routes.GROUPS) {
             GroupsScreen(localStore, repository, onBack = { nav.popBackStack() })
+        }
+        composable(Routes.STAGE4) {
+            Stage4Screen(localStore, onBack = { nav.popBackStack() })
         }
         composable(Routes.DEV_LOG) {
             LogScreen(onBack = { nav.popBackStack() })

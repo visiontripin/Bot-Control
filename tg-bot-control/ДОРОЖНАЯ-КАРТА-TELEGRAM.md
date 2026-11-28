@@ -12,7 +12,7 @@
 | **Этап 1** | **v1.8.0** | Ядро Telegram-механик: форматирование, опции отправки, медиа по `file_id`, `regex`/аргументы/плейсхолдеры, вложенные inline-меню (`I-4`), `web_app`/`copy_text`/`switch_inline`, `KeyboardOptions`/`ReplyKeyboardRemove`, `U-2`/`U-3`/`U-6` | ✅ **Выполнен (v1.8.0, code 39)** |
 | **Этап 2** | **v1.9.0** | Память, база подписчиков (`BotUserEntity`), персистентный JS `db` (`BotKvEntity`), пошаговые сценарии (`FsmEngine`), роли/админы/обязательная подписка, массовые рассылки (`BroadcastEngine`), разовые даты и альбомы объявлений | ✅ **Выполнен (v1.9.0, code 40)** |
 | **Этап 3** | **v2.0.0** | Группы, каналы, темы форумов, реакции, опросы, авто-модерация (`GroupModerationEngine` + `GroupsScreen`) и Webhook-адаптер | ✅ **Выполнен (v2.0.0, code 41)** |
-| **Этап 4** | **v2.1.0** | Инлайн-режим `@bot`, Telegram Stars / платежи, Mini Apps (`web_app_data`) и внешние API | 📋 Запланирован |
+| **Этап 4** | **v2.1.0** | Инлайн-режим `@bot`, Telegram Stars / платежи, Mini Apps (`web_app_data`) и внешние API | ✅ **Выполнен (v2.1.0, code 42)** |
 | **Этап 5** | **v2.2.0** | Полный паритет `desktop-web` (`BotControl.exe`), единый формат `.py` ↔ `.bc`, мастер запуска и техдолг | 📋 Запланирован |
 
 ---
@@ -86,17 +86,20 @@
 
 ---
 
-## Этап 4 (v2.1.0) — «Инлайн-режим, Telegram Stars, Mini Apps и внешние интеграции»
+## Этап 4 (v2.1.0) — «Инлайн-режим, Telegram Stars, Mini Apps и внешние интеграции» (✅ выполнено в v2.1.0, code 42)
 
 1. **Inline Mode (`@bot запрос`):**
-   - Обработка `inline_query` и `chosen_inline_result`, метод `answerInlineQuery` (карточки из наборов, правил и каталогов).
+   - Обработка `inline_query` и `chosen_inline_result` (`TelegramUpdates.kt`, 14 типов `allowed_updates`), метод `answerInlineQuery` в `TelegramApi.kt` и чистый построитель карточек `InlineCatalogMatcher` (из своих карточек, публичных правил, наборов текущего/общего бота и каталога товаров Stars с глубокими ссылками `/start buy_<id>`).
 2. **Платежи и Telegram Stars (`XTR`):**
-   - `sendInvoice`, `createInvoiceLink`, `answerPreCheckoutQuery`, обработка `successful_payment` и `refundStarPayment`, автоматическая выдача контента/роли после оплаты.
+   - Методы `sendInvoice`, `createInvoiceLink`, `answerPreCheckoutQuery`, `refundStarPayment` (`TelegramApi.kt`) + проверка суммы и статуса товара `PaymentPolicy.verifyPreCheckout`.
+   - Обработка `successful_payment` в `Stage4Engine`: запись заказа `StarOrder`, авто-выдача текста/медиа, повышение роли (`vip`/`admin`) и тега в Room (`BotUserEntity`), уведомление админам, кнопка возврата Stars и действие inline-кнопки `"invoice"` в `MenuEditor`.
 3. **Telegram Mini Apps (`web_app`):**
-   - Обработка `web_app_data`, метод `answerWebAppQuery`, встроенный локальный шаблон витрины/формы или подключение внешнего HTTPS Mini App.
+   - Обработка `web_app_data` в `Stage4Engine` (парсинг JSON/текста, сохранение в `{переменные}` пользователя, запуск счёта Stars по `{"action":"buy"}`, уведомление админов), методы `answerWebAppQuery` и `setChatMenuButtonWebApp`.
+   - Встроенная локальная HTML5-витрина и форма заявки в `FileServer.kt` (`GET /miniapp/<botId>`) + поддержка внешнего HTTPS Mini App URL в `Stage4Screen` (`Routes.STAGE4`).
 4. **Внешние API-интеграции и обработка входящих медиа:**
-   - Безопасный `http.get/post` с белым списком доменов в настройках бота (вебхуки в CRM, Google Таблицы, внешние сервисы).
-   - Передача входящих фото/документов/голосовых в сценарии и мультимодальные локальные модели.
+   - Безопасный `SafeHttpClient` + `HttpAllowlistPolicy` (`http.get/post` в JS-песочнице `BotScript` и исходящие вебхуки оплаты/лида `webhookOnPaymentUrl` / `webhookOnLeadUrl`) со строгим белым списком доменов (`httpAllowedDomains`) и блокировкой не-HTTPS/неразрешённых адресов.
+   - Скачивание входящих фото/документов/голосовых/аудио/видео в `bot_<id>/media/in_*` и передача метаданных (`e.caption`, `e.mimeType`, `e.fileName`, `e.fileSize`, `e.localPath`, плейсхолдеры `{caption}/{kind}/{file_name}/{local_path}`) в правила, JS-скрипты и промт локального ИИ (`BotBrain`).
+   - Регрессионный набор `Stage4Test.kt` (45 проверок) и проверка изоляции `check-bot-isolation.py` (`75` методов хранилища).
 
 ---
 

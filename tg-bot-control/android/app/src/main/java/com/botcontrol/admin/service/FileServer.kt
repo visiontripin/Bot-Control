@@ -23,6 +23,7 @@ class FileServer(context: Context) : NanoHTTPD(PORT) {
         return try {
             when {
                 session.method == Method.POST && uri.startsWith("/telegram-webhook/") -> webhook(session, uri)
+                session.method == Method.GET && uri.startsWith("/miniapp/") -> miniApp(uri)
                 session.method == Method.POST && uri == "/upload" -> upload(session)
                 uri == "/delete" -> delete(session)
                 uri.startsWith("/file/") -> download(uri.removePrefix("/file/"))
@@ -120,6 +121,64 @@ class FileServer(context: Context) : NanoHTTPD(PORT) {
     }
 
     // ---------- действия ----------
+
+    private fun miniApp(uri: String): Response {
+        val botId = uri.removePrefix("/miniapp/").trim('/').toLongOrNull() ?: return notFound()
+        val store = (appContext as? BotControlApp)?.localStore ?: return notFound()
+        val cfg = runBlocking { store.webAppConfig(botId) }
+        val products = runBlocking { store.digitalProducts(botId).filter { it.active } }
+        val title = esc(cfg.title.ifBlank { "Витрина бота" })
+        val intro = esc(cfg.introText.ifBlank { "Выберите товар или отправьте заявку в бот." })
+        val submitLabel = esc(cfg.submitButtonText.ifBlank { "Отправить в бот" })
+
+        val sb = StringBuilder()
+        sb.append("<!doctype html><html lang='ru'><head><meta charset='utf-8'>")
+        sb.append("<meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1'>")
+        sb.append("<title>$title</title>")
+        sb.append("<script src='https://telegram.org/js/telegram-web-app.js'></script>")
+        sb.append("<style>")
+        sb.append("body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:16px;")
+        sb.append("background:var(--tg-theme-bg-color,#0E1621);color:var(--tg-theme-text-color,#F5F6F7)}")
+        sb.append("main{max-width:540px;margin:0 auto}")
+        sb.append(".card{background:var(--tg-theme-secondary-bg-color,#17212B);border:1px solid #33475A;")
+        sb.append("border-radius:14px;padding:14px;margin-bottom:12px}")
+        sb.append("h2{margin:0 0 6px;font-size:20px}p{margin:0 0 12px;color:var(--tg-theme-hint-color,#8FA1B3)}")
+        sb.append("input,textarea{width:100%;box-sizing:border-box;background:#0E1621;color:#F5F6F7;")
+        sb.append("border:1px solid #33475A;border-radius:10px;padding:10px;margin-bottom:10px;font-size:15px}")
+        sb.append("button{width:100%;background:var(--tg-theme-button-color,#2B5278);")
+        sb.append("color:var(--tg-theme-button-text-color,#FFFFFF);border:none;border-radius:10px;")
+        sb.append("padding:11px 14px;font-size:15px;font-weight:600;cursor:pointer}")
+        sb.append(".prod{display:flex;justify-content:space-between;align-items:center;gap:12px}")
+        sb.append(".price{font-weight:700;color:#FBBF24;white-space:nowrap}")
+        sb.append("</style></head><body><main>")
+        sb.append("<div class='card'><h2>$title</h2><p>$intro</p></div>")
+
+        if (products.isNotEmpty()) {
+            sb.append("<div class='card'><h3>⭐ Витрина Telegram Stars</h3>")
+            products.forEach { p ->
+                val pId = esc(p.id).replace("'", "")
+                sb.append("<div class='prod' style='margin:10px 0;padding-top:8px;border-top:1px solid #263646'>")
+                sb.append("<div><b>${esc(p.title)}</b><br><small>${esc(p.description)}</small></div>")
+                sb.append("<button style='width:auto;min-width:110px' onclick=\"buyProduct('$pId')\">⭐ ${p.priceStars} XTR</button>")
+                sb.append("</div>")
+            }
+            sb.append("</div>")
+        }
+
+        sb.append("<div class='card'><h3>📝 Заявка</h3>")
+        sb.append("<input id='name' placeholder='Ваше имя'>")
+        sb.append("<input id='contact' placeholder='Телефон или @username'>")
+        sb.append("<textarea id='note' rows='3' placeholder='Комментарий или вопрос'></textarea>")
+        sb.append("<button onclick='sendForm()'>$submitLabel</button>")
+        sb.append("<p id='msg' style='margin-top:8px;font-size:13px'></p>")
+        sb.append("</div></main><script>")
+        sb.append("var tg=window.Telegram&&window.Telegram.WebApp;if(tg){tg.ready();tg.expand();}")
+        sb.append("function sendPayload(obj){var s=JSON.stringify(obj);if(tg&&tg.sendData){tg.sendData(s);tg.close();}else{document.getElementById('msg').innerText='Предпросмотр (вне Telegram): '+s;}}")
+        sb.append("function buyProduct(id){sendPayload({action:'buy',productId:id});}")
+        sb.append("function sendForm(){var n=document.getElementById('name').value.trim();var c=document.getElementById('contact').value.trim();var t=document.getElementById('note').value.trim();if(!n&&!c&&!t){document.getElementById('msg').innerText='Заполните хотя бы одно поле';return;}sendPayload({action:'lead',name:n,contact:c,comment:t});}")
+        sb.append("</script></body></html>")
+        return newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", sb.toString())
+    }
 
     private fun webhook(session: IHTTPSession, uri: String): Response {
         val botId = uri.removePrefix("/telegram-webhook/").trim('/').toLongOrNull()

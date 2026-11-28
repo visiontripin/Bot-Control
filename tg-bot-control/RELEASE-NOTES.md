@@ -1,3 +1,22 @@
+# BotControl v2.1.0 (code 42)
+
+## ⚡ Inline-режим `@bot`, Telegram Stars (`XTR`), Mini Apps, HTTP API и входящие медиа
+
+Четвёртый крупный этап дорожной карты `ДОРОЖНАЯ-КАРТА-TELEGRAM.md` (строго per-`botId`):
+
+- **Inline-режим (`@bot запрос`):**
+  - В `TelegramUpdatesParser` добавлены `inline_query`, `chosen_inline_result` и `pre_checkout_query` (всего 14 типов `allowed_updates`).
+  - Реализованы `answerInlineQuery` и `InlineCatalogMatcher`: карточки из своих описаний, публичных правил, наборов бота и каталога товаров Telegram Stars с прямой кнопкой/ссылкой `/start buy_<id>`.
+- **Платежи и Telegram Stars (`XTR`):**
+  - Методы `sendInvoice`, `createInvoiceLink`, `answerPreCheckoutQuery`, `refundStarPayment` и проверка `PaymentPolicy`.
+  - В `Stage4Engine` и `Stage4Screen`: каталог цифровых товаров, генерация платёжных ссылок, кнопка оплаты `action = "invoice"` в `MenuEditor`, авто-выдача текста/медиа, повышение роли (`vip`/`admin`) и тега в Room, журнал заказов `StarOrder` и возврат Stars в один тап.
+- **Telegram Mini Apps (`web_app`):**
+  - Обработка `web_app_data` (`Stage4Engine`), методы `answerWebAppQuery` и `setChatMenuButtonWebApp` (кнопка меню чата).
+  - Встроенный HTML5-шаблон витрины и формы заявки на `GET /miniapp/<botId>` в `FileServer.kt` (с `Telegram.WebApp.sendData`) и поддержка внешнего HTTPS URL в `Stage4Screen`.
+- **Внешние HTTP API и входящие медиа:**
+  - В JS-песочнице `BotScript` добавлены `http.get(url, headers?)` и `http.post(url, bodyOrObj, headers?)` через `SafeHttpClient`, работающие строго по белому списку доменов `httpAllowedDomains`, плюс вебхуки на оплаты и заявки Mini App.
+  - Входящие фото/документы/голосовые автоматически кэшируются в `bot_<id>/media/in_*` (до 20 МБ) и передаются в JS-скрипты (`e.caption`, `e.mimeType`, `e.fileName`, `e.fileSize`, `e.localPath`), плейсхолдеры и контекст локального ИИ (`BotBrain`).
+
 # BotControl v2.0.0 (code 41)
 
 ## 🛡 Группы, каналы, темы форумов, авто-модерация и Webhook-адаптер

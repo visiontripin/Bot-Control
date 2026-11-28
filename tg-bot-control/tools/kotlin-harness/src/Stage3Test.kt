@@ -16,7 +16,7 @@ fun main() {
     )
     s3check("allowed_updates contains all 11 Stage 3 update types",
         expectedAllowed.all { it in TelegramUpdatesParser.DEFAULT_ALLOWED_UPDATES } &&
-            TelegramUpdatesParser.DEFAULT_ALLOWED_UPDATES.size == 11)
+            TelegramUpdatesParser.DEFAULT_ALLOWED_UPDATES.size >= 11)
 
     // 2. Комплексный getUpdates JSON со всеми новыми полями и типами
     val updatesJson = """

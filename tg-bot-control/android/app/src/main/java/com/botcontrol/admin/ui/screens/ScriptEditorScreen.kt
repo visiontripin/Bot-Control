@@ -65,7 +65,7 @@ fun ScriptEditorScreen(repository: BotRepository, ruleId: Int, onBack: () -> Uni
             TextButton(onClick = onBack) { Text("← Назад") }
             Text("Скрипт: $pattern", style = MaterialTheme.typography.titleSmall)
         }
-        Text("JS handle(e): e.user, e.text, e.chatId, e.username, e.userId, e.chatType, e.args, e.replyToText, e.kind, e.fileId. Память в Room: db.get/set/del/incr и db.getGlobal/setGlobal/delGlobal/incrGlobal.",
+        Text("JS handle(e): e.user, e.text, e.chatId, e.username, e.userId, e.chatType, e.args, e.replyToText, e.kind, e.fileId, e.caption, e.mimeType, e.fileName, e.localPath. Память в Room: db.get/set/del/incr и db.getGlobal/setGlobal/delGlobal/incrGlobal. Внешний HTTP (по allowlist): http.get(url, headers?) и http.post(url, bodyOrObj, headers?).",
             style = MaterialTheme.typography.bodySmall)
         if (error.isNotBlank()) ErrorText(error)
         if (message.isNotBlank()) Text(message, color = MaterialTheme.colorScheme.primary)

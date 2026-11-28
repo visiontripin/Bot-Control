@@ -379,7 +379,7 @@ fun LocalBotScreen(
                             "command" -> "Команда, например /start"
                             "button" -> "Текст кнопки (как на кнопке)"
                             "regex" -> "Регулярное выражение, напр. ^заказ\\s+#?\\d+"
-                            else -> "Слово или фраза"
+                            else -> "Слово, фраза или [фото] / [голосовое] / [файл]"
                         }) },
                         isError = !regexValid,
                         singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -427,7 +427,7 @@ fun LocalBotScreen(
                             placeholder = { Text("Привет, {user}!") },
                             modifier = Modifier.fillMaxWidth().height(90.dp),
                         )
-                        Text("Подстановки: {user}, {username}, {user_id}, {chat_id}, {args}, {arg1}, {bot}",
+                        Text("Подстановки: {user}, {username}, {user_id}, {chat_id}, {args}, {arg1}, {bot}, {kind}, {caption}, {file_name}, {local_path}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else if (action == "script") {

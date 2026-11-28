@@ -336,6 +336,9 @@ fun BotTreeScreen(
                 TreeLeaf("📣 Массовая рассылка", "по всем или сегменту с прогрессом и 429/403") {
                     onOpen("broadcast")
                 },
+                TreeLeaf("⚡ Инлайн, Stars, Mini App и API", "инлайн-карточки @бот, Stars XTR, web_app, HTTP API") {
+                    onOpen("stage4")
+                },
             ))
 
         TreeBranch("🧪", "Тест", "имитация поведения без Telegram",

@@ -178,7 +178,7 @@ data class KeyboardOptions(
             contactButton.isBlank() && locationButton.isBlank()
 }
 
-/** Контекст входящего сообщения для движка правил, плейсхолдеров и JS-скриптов. */
+/** Контекст входящего сообщения для движка правил, плейсхолдеров, LLM и JS-скриптов. */
 data class MessageCtx(
     val chatId: Long = 0L,
     val userId: Long = 0L,
@@ -191,6 +191,11 @@ data class MessageCtx(
     val replyToText: String = "",
     val kind: String = "",
     val fileId: String = "",
+    val caption: String = "",
+    val mimeType: String = "",
+    val fileName: String = "",
+    val fileSize: Long = 0L,
+    val localMediaPath: String = "",
 )
 
 /** Gson-хелперы для списков в DataStore и опций правил. */
@@ -240,6 +245,26 @@ object BotJson {
     fun groupModeration(json: String): GroupModerationConfig =
         if (json.isBlank()) GroupModerationConfig()
         else load(json, object : TypeToken<GroupModerationConfig>() {}, GroupModerationConfig())
+
+    fun inlineConfig(json: String): InlineModeConfig =
+        if (json.isBlank()) InlineModeConfig()
+        else load(json, object : TypeToken<InlineModeConfig>() {}, InlineModeConfig())
+
+    fun productList(json: String): List<DigitalProduct> =
+        if (json.isBlank()) emptyList()
+        else load(json, object : TypeToken<List<DigitalProduct>>() {}, emptyList())
+
+    fun orderList(json: String): List<StarOrder> =
+        if (json.isBlank()) emptyList()
+        else load(json, object : TypeToken<List<StarOrder>>() {}, emptyList())
+
+    fun webAppConfig(json: String): WebAppConfig =
+        if (json.isBlank()) WebAppConfig()
+        else load(json, object : TypeToken<WebAppConfig>() {}, WebAppConfig())
+
+    fun integrationsConfig(json: String): IntegrationsConfig =
+        if (json.isBlank()) IntegrationsConfig()
+        else load(json, object : TypeToken<IntegrationsConfig>() {}, IntegrationsConfig())
 }
 
 /** Детерминированные id кнопок (рекурсивно, включая вложенные submenu):
@@ -351,6 +376,11 @@ object BotMatcher {
             .replace("{arg1}", args.getOrElse(0) { "" })
             .replace("{arg2}", args.getOrElse(1) { "" })
             .replace("{arg3}", args.getOrElse(2) { "" })
+            .replace("{caption}", ctx.caption)
+            .replace("{kind}", ctx.kind)
+            .replace("{file_id}", ctx.fileId)
+            .replace("{file_name}", ctx.fileName)
+            .replace("{local_path}", ctx.localMediaPath)
 
         if (vars.isNotEmpty() && out.contains('{')) {
             vars.forEach { (k, v) ->
@@ -801,5 +831,281 @@ object CaptchaPolicy {
         val chatId = rest.substring(0, sep).toLongOrNull() ?: return null
         val userId = rest.substring(sep + 1).toLongOrNull() ?: return null
         return chatId to userId
+    }
+}
+
+// ------------------------------------------------------------------
+// Stage 4 (v2.1.0): Inline-режим, Telegram Stars, Mini Apps и HTTP API
+// ------------------------------------------------------------------
+
+/** Карточка результата inline-режима (@bot запрос). */
+data class InlineArticleItem(
+    val id: String = "",
+    val title: String = "",
+    val description: String = "",
+    val replyText: String = "",
+    val parseMode: String = "",
+    val keywords: String = "",
+)
+
+/** Настройки Inline Mode на бота (per-botId). */
+data class InlineModeConfig(
+    val enabled: Boolean = false,
+    val includePacks: Boolean = true,
+    val includeRules: Boolean = true,
+    val switchPmText: String = "",
+    val cacheTimeSec: Int = 10,
+    val customItems: List<InlineArticleItem> = emptyList(),
+)
+
+/** Цифровой товар или доступ за Telegram Stars (currency = XTR). */
+data class DigitalProduct(
+    val id: String = "",
+    val title: String = "",
+    val description: String = "",
+    val priceStars: Int = 10,
+    val deliverText: String = "✅ Спасибо за оплату {title}! Ваш доступ активирован.",
+    val deliverMediaType: String = "",
+    val deliverMediaRef: String = "",
+    val grantRole: String = "", // "" | "vip" | "admin"
+    val grantTag: String = "",
+    val active: Boolean = true,
+)
+
+/** Запись об успешном платеже Telegram Stars (для истории и refundStarPayment). */
+data class StarOrder(
+    val id: String = "",
+    val userId: Long = 0L,
+    val username: String = "",
+    val productId: String = "",
+    val title: String = "",
+    val amountStars: Int = 0,
+    val chargeId: String = "",
+    val createdAtSec: Long = 0L,
+    val refunded: Boolean = false,
+)
+
+/** Настройки Telegram Mini App (локальная витрина / внешний HTTPS Mini App). */
+data class WebAppConfig(
+    val localMiniAppEnabled: Boolean = false,
+    val title: String = "Витрина бота",
+    val introText: String = "Выберите товар или оставьте заявку — данные придут прямо в чат.",
+    val submitButtonText: String = "Отправить в бот",
+    val externalUrl: String = "",
+    val submitReplyTemplate: String = "✅ Заявка из Mini App получена:\n{data}",
+    val sendSubmitToAdmin: Boolean = true,
+)
+
+/** Внешние HTTP-интеграции (белый список доменов) и обработка входящих медиа. */
+data class IntegrationsConfig(
+    val httpAllowedDomains: List<String> = emptyList(),
+    val httpTimeoutSec: Int = 8,
+    val webhookOnPaymentUrl: String = "",
+    val webhookOnLeadUrl: String = "",
+    val passIncomingMediaToLlm: Boolean = true,
+)
+
+/** Упрощённое представление правила для чистого Kotlin-матчера Inline-режима. */
+data class InlineRuleEntry(
+    val id: Int,
+    val pattern: String,
+    val responseText: String,
+    val actionType: String,
+    val packId: String,
+    val parseMode: String = "",
+    val adminOnly: Boolean = false,
+    val enabled: Boolean = true,
+)
+
+/** Чистый Kotlin-построитель карточек inline_query из каталога, правил и наборов. */
+data class BuiltInlineArticle(
+    val id: String,
+    val title: String,
+    val description: String,
+    val messageText: String,
+    val parseMode: String = "",
+)
+
+object InlineCatalogMatcher {
+    fun buildArticles(
+        query: String,
+        config: InlineModeConfig,
+        rules: List<InlineRuleEntry>,
+        packs: List<ReplyPack>,
+        products: List<DigitalProduct>,
+        botId: Long,
+        ctx: MessageCtx,
+        botUsername: String = "",
+        maxResults: Int = 25,
+    ): List<BuiltInlineArticle> {
+        if (!config.enabled) return emptyList()
+        val q = query.trim().lowercase()
+        val out = ArrayList<BuiltInlineArticle>()
+        val seenIds = HashSet<String>()
+
+        fun addArticle(rawId: String, title: String, desc: String, body: String, pm: String = "") {
+            if (out.size >= maxResults) return
+            if (title.isBlank() || body.isBlank()) return
+            val id = rawId.take(64).ifBlank { "inl_${out.size}" }
+            if (!seenIds.add(id)) return
+            val expanded = BotMatcher.expandPlaceholders(body, ctx.copy(text = "/inline ${query.trim()}"), botUsername)
+            out.add(
+                BuiltInlineArticle(
+                    id = id,
+                    title = title.take(128),
+                    description = desc.take(200),
+                    messageText = expanded.take(4000),
+                    parseMode = pm,
+                ),
+            )
+        }
+
+        for (item in config.customItems) {
+            val hit = q.isBlank() ||
+                item.title.lowercase().contains(q) ||
+                item.description.lowercase().contains(q) ||
+                item.keywords.lowercase().contains(q) ||
+                item.replyText.lowercase().contains(q)
+            if (hit) {
+                addArticle(
+                    rawId = "item_${item.id.ifBlank { md8(item.title) }}",
+                    title = item.title,
+                    desc = item.description.ifBlank { item.replyText.take(80) },
+                    body = item.replyText,
+                    pm = item.parseMode,
+                )
+            }
+        }
+
+        if (config.includeRules) {
+            for (r in rules) {
+                if (!r.enabled || r.adminOnly) continue
+                if (r.actionType !in setOf("text", "pack")) continue
+                val body = if (r.actionType == "pack") {
+                    val p = packs.firstOrNull { it.id == r.packId }
+                    p?.items?.firstOrNull().orEmpty()
+                } else r.responseText
+                if (body.isBlank()) continue
+                val hit = q.isBlank() ||
+                    r.pattern.lowercase().contains(q) ||
+                    body.lowercase().contains(q)
+                if (hit) {
+                    addArticle(
+                        rawId = "rule_${r.id}",
+                        title = r.pattern,
+                        desc = body.take(90),
+                        body = body,
+                        pm = r.parseMode,
+                    )
+                }
+            }
+        }
+
+        if (config.includePacks) {
+            val ownOrShared = packs.filter { it.ownerBotId == 0L || it.ownerBotId == botId }
+            for (p in ownOrShared) {
+                if (p.items.isEmpty()) continue
+                val nameMatch = q.isBlank() || p.name.lowercase().contains(q)
+                val matchingItems = if (nameMatch) p.items.take(3)
+                else p.items.filter { it.lowercase().contains(q) }.take(3)
+                matchingItems.forEachIndexed { idx, line ->
+                    addArticle(
+                        rawId = "pack_${md8(p.id + "_" + idx + "_" + line.take(20))}",
+                        title = "${p.name}: ${line.take(40)}",
+                        desc = line.take(90),
+                        body = line,
+                    )
+                }
+            }
+        }
+
+        for (prod in products.filter { it.active }) {
+            val hit = q.isBlank() ||
+                prod.title.lowercase().contains(q) ||
+                prod.description.lowercase().contains(q)
+            if (hit) {
+                val botTag = botUsername.removePrefix("@")
+                val linkHint = if (botTag.isNotBlank()) "\n\n👉 Оформить в боте: https://t.me/$botTag?start=buy_${prod.id}" else ""
+                addArticle(
+                    rawId = "prod_${prod.id.ifBlank { md8(prod.title) }}",
+                    title = "⭐ ${prod.title} (${prod.priceStars} XTR)",
+                    desc = prod.description.ifBlank { "Цифровой товар за ${prod.priceStars} звёзд" },
+                    body = "⭐ <b>${prod.title}</b> — ${prod.priceStars} Stars\n${prod.description}$linkHint",
+                    pm = "HTML",
+                )
+            }
+        }
+        return out
+    }
+}
+
+/** Проверка белого списка доменов для исходящих HTTP-запросов скриптов и вебхуков. */
+object HttpAllowlistPolicy {
+    fun parseDomains(raw: String): List<String> =
+        raw.split(",", "\n", ";", " ")
+            .map { normalizeHost(it) }
+            .filter { it.isNotBlank() }
+            .distinct()
+
+    private fun normalizeHost(input: String): String {
+        val s = input.trim().lowercase()
+        if (s.isBlank()) return ""
+        val afterScheme = if ("://" in s) s.substringAfter("://") else s
+        return afterScheme
+            .substringBefore('/')
+            .substringBefore('?')
+            .substringBefore('#')
+            .substringAfterLast('@')
+            .substringBefore(':')
+            .trim()
+    }
+
+    fun isLocalHost(host: String): Boolean =
+        host == "localhost" ||
+            host == "127.0.0.1" ||
+            host.startsWith("192.168.") ||
+            host.startsWith("10.")
+
+    fun isUrlAllowed(rawUrl: String, allowedDomains: List<String>): Boolean {
+        if (allowedDomains.isEmpty()) return false
+        val trimmed = rawUrl.trim()
+        val lower = trimmed.lowercase()
+        val isHttps = lower.startsWith("https://")
+        val isHttp = lower.startsWith("http://")
+        if (!isHttps && !isHttp) return false
+        val authority = trimmed.substringAfter("://").substringBefore('/').substringBefore('?').substringBefore('#')
+        if (authority.isBlank() || '@' in authority) return false
+        val host = authority.substringBefore(':').lowercase()
+        if (host.isBlank()) return false
+        if (isHttp && !isLocalHost(host)) return false
+        return allowedDomains.any { rawAllowed ->
+            val dom = normalizeHost(rawAllowed)
+            dom.isNotBlank() && (host == dom || host.endsWith(".$dom"))
+        }
+    }
+}
+
+/** Политика счетов Telegram Stars (XTR) и проверки pre_checkout_query. */
+object PaymentPolicy {
+    fun productPayload(productId: String): String = "prod_${productId.trim()}"
+
+    fun parseProductPayload(payload: String): String? =
+        if (payload.startsWith("prod_")) payload.removePrefix("prod_").takeIf { it.isNotBlank() } else null
+
+    fun verifyPreCheckout(
+        currency: String,
+        totalAmount: Int,
+        payload: String,
+        products: List<DigitalProduct>,
+    ): Pair<Boolean, String> {
+        if (totalAmount <= 0) return false to "Некорректная сумма платежа"
+        val prodId = parseProductPayload(payload) ?: return true to ""
+        val prod = products.firstOrNull { it.id == prodId }
+            ?: return false to "Товар больше недоступен"
+        if (!prod.active) return false to "Товар временно снят с продажи"
+        if (currency.equals("XTR", ignoreCase = true) && prod.priceStars != totalAmount) {
+            return false to "Цена товара изменилась (${prod.priceStars} XTR)"
+        }
+        return true to ""
     }
 }

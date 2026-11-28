@@ -14,6 +14,7 @@ import androidx.core.app.ServiceCompat
 import com.botcontrol.admin.BotControlApp
 import com.botcontrol.admin.R
 import com.botcontrol.admin.data.AccessPolicy
+import com.botcontrol.admin.data.BotFiles
 import com.botcontrol.admin.data.BotJson
 import com.botcontrol.admin.data.BotMatcher
 import com.botcontrol.admin.data.InlineBtn
@@ -426,6 +427,18 @@ class LocalBotService : Service() {
             GroupModerationEngine.handlePollAnswer(store, api, botId, pa)
             setState(botId) { it.copy(processed = it.processed + 1) }
         }
+        batch.inlineQueries.forEach { iq ->
+            Stage4Engine.handleInlineQuery(app, store, api, botId, iq)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.chosenInlineResults.forEach { cir ->
+            Stage4Engine.handleChosenInlineResult(botId, cir)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.preCheckoutQueries.forEach { pcq ->
+            Stage4Engine.handlePreCheckoutQuery(store, api, botId, pcq)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
     }
 
     private fun setState(botId: Long, update: (LocalBotState) -> LocalBotState) {
@@ -521,14 +534,46 @@ class LocalBotService : Service() {
             return
         }
 
+        // Stage 4: оплата Telegram Stars (successful_payment) и данные Mini App (web_app_data)
+        if (msg.successfulPayment != null) {
+            Stage4Engine.handleSuccessfulPayment(app, store, api, botId, msg, botScope)
+            return
+        }
+        if (msg.webAppData != null) {
+            Stage4Engine.handleWebAppData(app, store, api, botId, msg, botScope)
+            return
+        }
+
         // Редактирование сообщений не перезапускает обычные правила (чтобы не дублировать ответы).
         if (msg.isEdited) {
             BotLog.log(botId, "✏️ Правка сообщения msg=${msg.messageId} в чате ${msg.chatId}: '${msg.text.take(60)}'")
             return
         }
 
-        val text = if (msg.text.isBlank() && msg.kind.isNotBlank()) "[${msg.kind}]" else msg.text.trim()
-        if (text.isEmpty() && msg.photoId.isBlank() && msg.locationLat == null && msg.contactPhone.isBlank()) return
+        val text = if (msg.text.isBlank()) {
+            when {
+                msg.caption.isNotBlank() -> msg.caption.trim()
+                msg.kind.isNotBlank() -> "[${msg.kind}]"
+                else -> ""
+            }
+        } else msg.text.trim()
+        if (text.isEmpty() && msg.photoId.isBlank() && msg.fileId.isBlank() && msg.locationLat == null && msg.contactPhone.isBlank()) return
+
+        // Быстрая оплата по deep-link /start buy_<productId> (например из Inline-режима)
+        if (text.startsWith("/start buy_", ignoreCase = true)) {
+            val buyKey = text.substringAfter("/start buy_").substringBefore(' ').trim()
+            if (buyKey.isNotBlank() && Stage4Engine.sendProductInvoice(store, api, botId, msg.chatId, buyKey, msg.messageThreadId)) {
+                return
+            }
+        }
+
+        // При включённой обработке входящих медиа скачиваем фото/файл/голосовое в каталог бота (до 20 МБ)
+        val attachFileId = msg.fileId.ifBlank { msg.photoId }
+        val integ = store.integrationsConfig(botId)
+        val localMediaPath = if (integ.passIncomingMediaToLlm && attachFileId.isNotBlank() && msg.fileSize <= 20_000_000L) {
+            cacheIncomingMedia(api, botId, attachFileId, msg)
+        } else ""
+
         val keyboard = store.keyboard(botId)
         val msgCtx = MessageCtx(
             chatId = msg.chatId,
@@ -538,10 +583,15 @@ class LocalBotService : Service() {
             chatType = msg.chatType,
             text = text,
             kind = msg.kind,
-            fileId = msg.fileId.ifBlank { msg.photoId },
+            fileId = attachFileId,
             messageId = msg.messageId,
             threadId = msg.messageThreadId,
             replyToText = msg.replyToText,
+            caption = msg.caption,
+            mimeType = msg.mimeType,
+            fileName = msg.fileName,
+            fileSize = msg.fileSize,
+            localMediaPath = localMediaPath,
         )
 
         // Обычные посты в каналах обрабатываем только при явном правиле с областью "channel" или автореакцией.
@@ -912,6 +962,10 @@ class LocalBotService : Service() {
                     api.sendMessage(cb.chatId, "Сценарий анкеты не найден или выключен.")
                 }
             }
+            "invoice" -> {
+                val key = btn.packId.ifBlank { btn.menuTarget.ifBlank { btn.text.ifBlank { btn.label } } }
+                Stage4Engine.sendProductInvoice(store, api, botId, cb.chatId, key)
+            }
             "submenu" -> {
                 val sub = if (btn.submenu.isNotEmpty()) btn.submenu.withIds()
                 else findTargetMenu(app, store, botId, btn.menuTarget)
@@ -1153,6 +1207,36 @@ class LocalBotService : Service() {
             searchParent(event.menu.withIds())?.let { return it }
         }
         return null
+    }
+
+    private suspend fun cacheIncomingMedia(
+        api: TelegramApi,
+        botId: Long,
+        fileId: String,
+        msg: TgMessage,
+    ): String {
+        val dir = BotFiles.subdir(this, botId, BotFiles.MEDIA)
+        // Удаляем старые авто-кэшированные вложения, оставляя последние 30
+        dir.listFiles()?.filter { it.isFile && it.name.startsWith("in_") }
+            ?.sortedByDescending { it.lastModified() }
+            ?.drop(30)
+            ?.forEach { runCatching { it.delete() } }
+
+        val tgPath = api.getFile(fileId).getOrNull()?.takeIf { it.isNotBlank() } ?: return ""
+        val extFromPath = tgPath.substringAfterLast('.', "").lowercase().take(8)
+        val ext = when {
+            extFromPath.isNotBlank() && extFromPath.all { it.isLetterOrDigit() } -> extFromPath
+            msg.kind == "фото" -> "jpg"
+            msg.kind == "голосовое" -> "ogg"
+            msg.kind == "видео" -> "mp4"
+            msg.kind == "аудио" -> "mp3"
+            else -> "bin"
+        }
+        val base = BotFiles.sanitizeName(msg.fileName.ifBlank { "in_${msg.messageId}_${fileId.take(8)}.$ext" })
+        val name = if (base.startsWith("in_")) base else "in_${msg.messageId}_$base"
+        val downloaded = api.downloadFile(tgPath, dir, name).getOrNull() ?: return ""
+        BotLog.log(botId, "📎 Скачано вложение (${msg.kind.ifBlank { "файл" }}): ${downloaded.name}")
+        return downloaded.absolutePath
     }
 
     // ---------- планировщик напоминаний ----------
