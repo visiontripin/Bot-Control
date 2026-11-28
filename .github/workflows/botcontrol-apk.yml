@@ -14,6 +14,8 @@ on:
     branches: ["arena/**", "main"]
     paths:
       - "tg-bot-control/android/**"
+      - "tg-bot-control/tools/check-no-tokens.py"
+      - "tg-bot-control/tools/check-bot-isolation.py"
       - ".github/workflows/botcontrol-apk.yml"
   workflow_dispatch:
 
