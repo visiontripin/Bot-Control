@@ -12,6 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -45,6 +46,7 @@ fun PackEditScreen(
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var text by remember { mutableStateOf("") }
+    var shuffleBag by remember { mutableStateOf(true) }
     var loaded by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
 
@@ -53,6 +55,7 @@ fun PackEditScreen(
         if (pack != null) {
             name = pack.name
             text = pack.items.joinToString("\n")
+            shuffleBag = pack.shuffleBag
         }
         loaded = true
     }
@@ -76,8 +79,13 @@ fun PackEditScreen(
                         .map { it.trim() }
                         .filter { it.isNotBlank() }
                     val updated = localStore.packs().map {
-                        if (it.id == packId) it.copy(name = name.trim().ifBlank { it.name }, items = items)
-                        else it
+                        if (it.id == packId) {
+                            it.copy(
+                                name = name.trim().ifBlank { it.name },
+                                items = items,
+                                shuffleBag = shuffleBag,
+                            )
+                        } else it
                     }
                     localStore.setPacks(updated)
                     message = "Сохранено: ${items.size} ответов"
@@ -92,6 +100,10 @@ fun PackEditScreen(
             label = { Text("Название набора") },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Checkbox(checked = shuffleBag, onCheckedChange = { shuffleBag = it })
+            Text("Не повторять ответы подряд (shuffle-bag)", style = MaterialTheme.typography.bodySmall)
+        }
         Spacer(Modifier.height(6.dp))
         Text("Один ответ — одна строка. Пустые строки игнорируются; можно вставить весь список из заметки или файла.",
             style = MaterialTheme.typography.bodySmall,

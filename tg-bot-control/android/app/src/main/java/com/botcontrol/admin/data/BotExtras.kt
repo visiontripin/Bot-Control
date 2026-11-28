@@ -2,21 +2,29 @@ package com.botcontrol.admin.data
 
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.random.Random
 
 /**
  * Кнопка под конкретным сообщением (inline keyboard в Telegram).
- * Нажатие -> всплывашка [toast] + действие: текст, случайное из набора,
- * вкл/выкл напоминаний (с правкой сообщения, как в оригинале) или скрипт.
+ * Поддерживает: текст, набор, вкл/выкл напоминаний, JS-скрипт, анимацию,
+ * кубик, URL-ссылку, Mini App (web_app), копирование текста (copy_text),
+ * inline-запрос в чат (switch_inline), локальный ИИ (llm), медиа (media),
+ * вложенное подменю (submenu) и возврат (back).
  */
 data class InlineBtn(
     val id: String = "",
     val label: String = "",
     val toast: String = "",
-    val action: String = "text", // text | pack | reminders_on | reminders_off | script | url
+    val action: String = "text", // text | pack | reminders_on | reminders_off | script | anim | dice | url | web_app | copy_text | switch_inline | llm | media | submenu | back
     val packId: String = "",
     val text: String = "",
     val script: String = "",
-    /** Если задан — кнопка-ссылка (например tg://user?id=… «Написать автору»). */
+    /** Если задан — кнопка-ссылка (например tg://user?id=…) или URL для web_app. */
     val url: String = "",
     /** Ряд под сообщением: 0 — авто (по 2 в ряд, как раньше), 1..N — номер ряда. */
     val row: Int = 0,
@@ -24,8 +32,18 @@ data class InlineBtn(
     val edit: Boolean = false,
     /** Всплывашка, если напоминания уже в нужном состоянии («Уже работает»). */
     val toastNoChange: String = "",
+    /** Вложенное меню для action == "submenu" (I-4). */
+    val submenu: List<InlineBtn> = emptyList(),
+    /** Имя/id целевого меню или правила для action == "submenu" (опционально). */
+    val menuTarget: String = "",
+    /** Тип медиа для action == "media": photo | sticker | animation | document | video | voice | audio. */
+    val mediaType: String = "",
+    /** file_id или URL медиа для action == "media". */
+    val mediaRef: String = "",
+    /** Форматирование текста ответа: "" | "HTML" | "MarkdownV2". */
+    val parseMode: String = "",
 ) {
-    val isUrl: Boolean get() = url.isNotBlank()
+    val isUrl: Boolean get() = action == "url" || (url.isNotBlank() && action != "web_app")
 }
 
 /**
@@ -55,6 +73,12 @@ data class ScheduleEvent(
     val menu: List<InlineBtn> = emptyList(),
     /** Отправлять в канал публикаций (см. «Настройки бота → Канал»). */
     val toChannel: Boolean = false,
+    /** Случайный разброс времени срабатывания ±N минут (U-3, 0..60). */
+    val jitterMin: Int = 0,
+    /** Форматирование текста события: "" | "HTML" | "MarkdownV2". */
+    val parseMode: String = "",
+    /** id топика форума супергруппы (если отправка в конкретную тему). */
+    val threadId: Int? = null,
 ) {
     fun timeLabel(): String = "%02d:%02d".format(hour, minute)
 
@@ -89,15 +113,60 @@ data class ReplyPack(
      * обновляет только наборы своего бота — чужие не перезаписывает.
      */
     val ownerBotId: Long = 0L,
+    /** true — не повторять фразы, пока не пройдёт весь список (U-2 shuffle-bag). */
+    val shuffleBag: Boolean = false,
 )
 
 /** Команда главного меню Telegram (кнопка «Меню» слева от поля ввода). */
 data class MenuCommand(
     val command: String = "",
     val description: String = "",
+    /** Область видимости: "" / "default" | "all_private_chats" | "all_group_chats" | "all_chat_administrators". */
+    val scope: String = "",
+    /** Код языка ISO 639-1 (например "ru", "en"), пусто = для всех языков. */
+    val languageCode: String = "",
 )
 
-/** Gson-хелперы для списков в DataStore. */
+/**
+ * Дополнительные настройки правила ответа (хранятся JSON-строкой в BotRuleEntity.options).
+ * Пустая строка / значения по умолчанию = старое поведение без лишних миграций Room.
+ */
+data class RuleOptions(
+    val parseMode: String = "",        // "" | "HTML" | "MarkdownV2"
+    val disablePreview: Boolean = false,
+    val silent: Boolean = false,
+    val protectContent: Boolean = false,
+    val replyTo: Boolean = false,
+    val wholeWord: Boolean = false,    // для type == "contains": по целым словам
+    val mediaType: String = "",        // photo | sticker | animation | document | video | voice | audio
+    val mediaRef: String = "",         // file_id или https:// URL
+    val pollQuestion: String = "",
+    val pollOptions: List<String> = emptyList(),
+    val pollAnonymous: Boolean = true,
+    val pollMultiple: Boolean = false,
+) {
+    val isDefault: Boolean
+        get() = parseMode.isBlank() && !disablePreview && !silent && !protectContent &&
+            !replyTo && !wholeWord && mediaType.isBlank() && mediaRef.isBlank() &&
+            pollQuestion.isBlank() && pollOptions.isEmpty() && pollAnonymous && !pollMultiple
+}
+
+/** Контекст входящего сообщения для движка правил, плейсхолдеров и JS-скриптов. */
+data class MessageCtx(
+    val chatId: Long = 0L,
+    val userId: Long = 0L,
+    val firstName: String = "",
+    val username: String = "",
+    val chatType: String = "",
+    val messageId: Int = 0,
+    val threadId: Int? = null,
+    val text: String = "",
+    val replyToText: String = "",
+    val kind: String = "",
+    val fileId: String = "",
+)
+
+/** Gson-хелперы для списков в DataStore и опций правил. */
 object BotJson {
     private val gson = Gson()
 
@@ -124,19 +193,203 @@ object BotJson {
 
     fun menuCommandList(json: String): List<MenuCommand> =
         load(json, object : TypeToken<List<MenuCommand>>() {}, emptyList())
+
+    fun ruleOptions(json: String): RuleOptions =
+        if (json.isBlank()) RuleOptions()
+        else load(json, object : TypeToken<RuleOptions>() {}, RuleOptions())
 }
 
-/** Детерминированные id кнопок: пустой callback_data Telegram отвергает
- *  (HTTP 400 — сообщение не доставляется вовсе). id = "cb"+md5(содержимое):
- *  совпадает при отправке и при нажатии без перезаписи хранилища. */
+/** Детерминированные id кнопок (рекурсивно, включая вложенные submenu):
+ *  пустой callback_data Telegram отвергает (HTTP 400). */
 fun List<InlineBtn>.withIds(): List<InlineBtn> = map { b ->
-    if (b.id.isNotBlank()) b else b.copy(
-        id = "cb" + md8(b.label + "|" + b.action + "|" + b.packId + "|" + b.text))
+    val fixedSub = if (b.submenu.isNotEmpty()) b.submenu.withIds() else b.submenu
+    val resolvedId = if (b.id.isNotBlank()) b.id else btnHashId(b)
+    if (resolvedId == b.id && fixedSub === b.submenu) b
+    else b.copy(id = resolvedId, submenu = fixedSub)
+}
+
+/** Рекурсивный поиск нажатой кнопки в меню и вложенных подменю; возвращает (кнопка, её уровень меню). */
+fun List<InlineBtn>.findButtonRecursive(data: String): Pair<InlineBtn, List<InlineBtn>>? {
+    val withIdsNow = this.withIds()
+    withIdsNow.firstOrNull { it.id == data }?.let { return it to withIdsNow }
+    for (btn in withIdsNow) {
+        if (btn.submenu.isNotEmpty()) {
+            btn.submenu.findButtonRecursive(data)?.let { return it }
+        }
+    }
+    return null
+}
+
+private fun btnHashId(b: InlineBtn): String {
+    val base = b.label + "|" + b.action + "|" + b.packId + "|" + b.text
+    val extra = listOf(b.menuTarget, b.mediaType, b.mediaRef).filter { it.isNotBlank() }.joinToString("|")
+    val raw = if (extra.isEmpty()) base else "$base|$extra"
+    return "cb" + md8(raw)
 }
 
 private fun md8(s: String): String =
-    java.security.MessageDigest.getInstance("MD5").digest(s.toByteArray())
+    MessageDigest.getInstance("MD5").digest(s.toByteArray())
         .joinToString("") { "%02x".format(it) }.take(8)
+
+/** Сопоставление правил, извлечение аргументов команд и подстановка плейсхолдеров. */
+object BotMatcher {
+
+    fun matchesRule(
+        type: String,
+        pattern: String,
+        text: String,
+        wholeWord: Boolean = false,
+    ): Boolean = when (type) {
+        "command" -> {
+            val first = text.trimStart().split(Regex("\\s+")).firstOrNull().orEmpty()
+            val expected = if (pattern.startsWith("/")) pattern else "/$pattern"
+            first.substringBefore("@").equals(expected, ignoreCase = true)
+        }
+        "button" -> text.equals(pattern, ignoreCase = true)
+        "regex" -> {
+            if (pattern.isBlank()) false
+            else runCatching {
+                Regex(pattern, setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+                    .containsMatchIn(text)
+            }.getOrDefault(false)
+        }
+        else -> {
+            if (pattern.isBlank()) false
+            else if (wholeWord && pattern.any { it.isLetterOrDigit() }) {
+                Regex(
+                    "(?<![\\p{L}\\p{N}_])" + Regex.escape(pattern) + "(?![\\p{L}\\p{N}_])",
+                    RegexOption.IGNORE_CASE,
+                ).containsMatchIn(text)
+            } else {
+                text.contains(pattern, ignoreCase = true)
+            }
+        }
+    }
+
+    fun extractCommandArgsRaw(text: String): String {
+        val trimmed = text.trim()
+        if (!trimmed.startsWith("/")) return ""
+        return trimmed.replaceFirst(Regex("^/\\S+\\s*"), "").trim()
+    }
+
+    fun extractCommandArgs(text: String): List<String> {
+        val raw = extractCommandArgsRaw(text)
+        return if (raw.isBlank()) emptyList() else raw.split(Regex("\\s+"))
+    }
+
+    fun expandPlaceholders(
+        template: String,
+        ctx: MessageCtx,
+        botUsername: String = "",
+        nowMs: Long = System.currentTimeMillis(),
+    ): String {
+        if (!template.contains('{')) return template
+        val argsRaw = extractCommandArgsRaw(ctx.text)
+        val args = if (argsRaw.isBlank()) emptyList() else argsRaw.split(Regex("\\s+"))
+        val rawUser = ctx.username.removePrefix("@")
+        val usernameVal = if (rawUser.isNotBlank()) "@$rawUser" else ctx.firstName
+        val userIdVal = (if (ctx.userId != 0L) ctx.userId else ctx.chatId).toString()
+        val rawBot = botUsername.removePrefix("@")
+        val botVal = if (rawBot.isNotBlank()) "@$rawBot" else ""
+
+        var out = template
+            .replace("@{username}", usernameVal)
+            .replace("@{bot}", botVal)
+            .replace("{user}", ctx.firstName)
+            .replace("{username}", usernameVal)
+            .replace("{user_id}", userIdVal)
+            .replace("{userId}", userIdVal)
+            .replace("{chat_id}", ctx.chatId.toString())
+            .replace("{chatId}", ctx.chatId.toString())
+            .replace("{text}", ctx.text)
+            .replace("{bot}", botVal)
+            .replace("{args}", argsRaw)
+            .replace("{arg1}", args.getOrElse(0) { "" })
+            .replace("{arg2}", args.getOrElse(1) { "" })
+            .replace("{arg3}", args.getOrElse(2) { "" })
+
+        if (out.contains("{date}") || out.contains("{time}")) {
+            val d = Date(nowMs)
+            if (out.contains("{date}")) {
+                out = out.replace("{date}", SimpleDateFormat("dd.MM.yyyy", Locale.US).format(d))
+            }
+            if (out.contains("{time}")) {
+                out = out.replace("{time}", SimpleDateFormat("HH:mm", Locale.US).format(d))
+            }
+        }
+        return out
+    }
+}
+
+/**
+ * Перебор элементов набора без повторов до полного исчерпания списка (U-2).
+ * Хранит оставшиеся индексы по ключу "botId:packId".
+ */
+object ShuffleBag {
+    private val bags = ConcurrentHashMap<String, MutableList<Int>>()
+    private val sizes = ConcurrentHashMap<String, Int>()
+
+    fun next(
+        botId: Long,
+        packId: String,
+        items: List<String>,
+        rng: Random = Random.Default,
+    ): String {
+        if (items.isEmpty()) return ""
+        if (items.size == 1) return items[0]
+        val key = "$botId:$packId"
+        val idx = synchronized(bags) {
+            var bag = bags[key]
+            if (bag == null || bag.isEmpty() || sizes[key] != items.size) {
+                bag = items.indices.toMutableList()
+                bag.shuffle(rng)
+                bags[key] = bag
+                sizes[key] = items.size
+            }
+            bag.removeAt(bag.lastIndex)
+        }
+        return items[idx]
+    }
+
+    fun reset(botId: Long, packId: String? = null) {
+        synchronized(bags) {
+            val prefix = if (packId == null) "$botId:" else "$botId:$packId"
+            val keys = bags.keys.filter { if (packId == null) it.startsWith(prefix) else it == prefix }
+            keys.forEach {
+                bags.remove(it)
+                sizes.remove(it)
+            }
+        }
+    }
+}
+
+/** Детерминированный дневной сдвиг (jitter ±N минут) для событий расписания (U-3). */
+object ScheduleJitter {
+    fun offsetMinutes(eventId: String, year: Int, dayOfYear: Int, jitterMin: Int): Int {
+        val j = jitterMin.coerceIn(0, 60)
+        if (j == 0) return 0
+        val digest = MessageDigest.getInstance("MD5")
+            .digest("$eventId:$year:$dayOfYear".toByteArray())
+        val hash = ((digest[0].toInt() and 0xFF) shl 24) or
+            ((digest[1].toInt() and 0xFF) shl 16) or
+            ((digest[2].toInt() and 0xFF) shl 8) or
+            (digest[3].toInt() and 0xFF)
+        val span = 2 * j + 1
+        return Math.floorMod(hash, span) - j
+    }
+
+    fun effectiveMinute(
+        hour: Int,
+        minute: Int,
+        eventId: String,
+        year: Int,
+        dayOfYear: Int,
+        jitterMin: Int,
+    ): Int {
+        val base = hour.coerceIn(0, 23) * 60 + minute.coerceIn(0, 59)
+        return (base + offsetMinutes(eventId, year, dayOfYear, jitterMin)).coerceIn(0, 23 * 60 + 59)
+    }
+}
 
 /** Объявление пользователя (режим «Объявления», публикация в канал). */
 data class Listing(

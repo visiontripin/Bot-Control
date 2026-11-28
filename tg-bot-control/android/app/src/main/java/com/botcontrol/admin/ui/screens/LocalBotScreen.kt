@@ -16,6 +16,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -165,9 +166,11 @@ fun LocalBotScreen(
                         val kindLabel = when (rule.type) {
                             "command" -> "Команда: ${rule.pattern}"
                             "button" -> "Кнопка: «${rule.pattern}»"
+                            "regex" -> "Regex: /${rule.pattern}/"
                             else -> "Содержит: «${rule.pattern}»"
                         }
                         Text(kindLabel, style = MaterialTheme.typography.titleSmall)
+                        val ruleOpts = com.botcontrol.admin.data.BotJson.ruleOptions(rule.options)
                         val actionLabel = when (rule.actionType) {
                             "script" -> "⚙️ скрипт JS"
                             "llm" -> "🤖 отвечает ИИ"
@@ -175,6 +178,8 @@ fun LocalBotScreen(
                             "anim" -> "🎞 анимация: " + com.botcontrol.admin.data.Anim.describe(
                                 com.botcontrol.admin.data.Anim.decode(rule.script))
                             "dice" -> "🎲 кубик ${rule.responseText.ifBlank { "🎲" }}"
+                            "media" -> "🖼 медиа (${ruleOpts.mediaType.ifBlank { "photo" }})"
+                            "poll" -> "📊 опрос: ${ruleOpts.pollQuestion.ifBlank { rule.responseText }.take(35)}"
                             else -> "Ответ: ${rule.responseText.take(50)}"
                         }
                         Text(actionLabel, style = MaterialTheme.typography.bodySmall)
@@ -291,6 +296,9 @@ fun LocalBotScreen(
     // ---- add/edit rule dialog ----
     if (showAddRule || editingRule != null) {
         val initial = editingRule
+        val initOpts = remember(initial?.id) {
+            com.botcontrol.admin.data.BotJson.ruleOptions(initial?.options.orEmpty())
+        }
         var type by remember { mutableStateOf(initial?.type ?: "command") }
         var action by remember { mutableStateOf(initial?.actionType ?: "text") }
         var pattern by remember { mutableStateOf(initial?.pattern ?: "") }
@@ -308,6 +316,23 @@ fun LocalBotScreen(
         var ruleMenu by remember {
             mutableStateOf(com.botcontrol.admin.data.BotJson.menu(initial?.menu.orEmpty()))
         }
+        var parseMode by remember { mutableStateOf(initOpts.parseMode) }
+        var disablePreview by remember { mutableStateOf(initOpts.disablePreview) }
+        var silent by remember { mutableStateOf(initOpts.silent) }
+        var protectContent by remember { mutableStateOf(initOpts.protectContent) }
+        var replyTo by remember { mutableStateOf(initOpts.replyTo) }
+        var wholeWord by remember { mutableStateOf(initOpts.wholeWord) }
+        var mediaType by remember { mutableStateOf(initOpts.mediaType.ifBlank { "photo" }) }
+        var mediaRef by remember { mutableStateOf(initOpts.mediaRef) }
+        var pollQuestion by remember { mutableStateOf(initOpts.pollQuestion.ifBlank { initial?.responseText.orEmpty() }) }
+        var pollOptsText by remember { mutableStateOf(initOpts.pollOptions.joinToString("\n")) }
+        var pollAnon by remember { mutableStateOf(initOpts.pollAnonymous) }
+        var pollMulti by remember { mutableStateOf(initOpts.pollMultiple) }
+        var showDeliveryOpts by remember {
+            mutableStateOf(initOpts.parseMode.isNotBlank() || initOpts.disablePreview ||
+                initOpts.silent || initOpts.protectContent || initOpts.replyTo || initOpts.wholeWord)
+        }
+        val regexValid = type != "regex" || runCatching { Regex(pattern) }.isSuccess
         LaunchedEffect(Unit) { packs = localStore.packs() }
         AlertDialog(
             onDismissRequest = { showAddRule = false; editingRule = null },
@@ -321,8 +346,12 @@ fun LocalBotScreen(
                         FilterChip(selected = type == "contains",
                             onClick = { type = "contains" }, label = { Text("Содержит") })
                     }
-                    FilterChip(selected = type == "button",
-                        onClick = { type = "button" }, label = { Text("Нажатие кнопки") })
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(selected = type == "button",
+                            onClick = { type = "button" }, label = { Text("Нажатие кнопки") })
+                        FilterChip(selected = type == "regex",
+                            onClick = { type = "regex" }, label = { Text("Regex") })
+                    }
                     Text("Для кнопки удобнее выбрать надпись и действие в разделе «Кнопки бота».", style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
@@ -330,10 +359,23 @@ fun LocalBotScreen(
                         label = { Text(when (type) {
                             "command" -> "Команда, например /start"
                             "button" -> "Текст кнопки (как на кнопке)"
+                            "regex" -> "Регулярное выражение, напр. ^заказ\\s+#?\\d+"
                             else -> "Слово или фраза"
                         }) },
+                        isError = !regexValid,
                         singleLine = true, modifier = Modifier.fillMaxWidth(),
                     )
+                    if (!regexValid) {
+                        Text("Некорректный Regex", color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (type == "contains") {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = wholeWord, onCheckedChange = { wholeWord = it })
+                            Text("Только целое слово (не подстрока внутри слова)",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                     Spacer(Modifier.height(8.dp))
                     Text("2. Что должен сделать бот?", style = MaterialTheme.typography.titleSmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -341,18 +383,22 @@ fun LocalBotScreen(
                             onClick = { action = "text" }, label = { Text("Текст") })
                         FilterChip(selected = action == "pack",
                             onClick = { action = "pack" }, label = { Text("Набор") })
+                        FilterChip(selected = action == "llm",
+                            onClick = { action = "llm" }, label = { Text("ИИ") })
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         FilterChip(selected = action == "script",
                             onClick = { action = "script" }, label = { Text("Скрипт JS") })
                         FilterChip(selected = action == "anim",
                             onClick = { action = "anim" }, label = { Text("🎞 Анимация") })
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         FilterChip(selected = action == "dice",
                             onClick = { action = "dice" }, label = { Text("🎲 Кубик") })
-                        FilterChip(selected = action == "llm",
-                            onClick = { action = "llm" }, label = { Text("ИИ") })
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(selected = action == "media",
+                            onClick = { action = "media" }, label = { Text("🖼 Медиа") })
+                        FilterChip(selected = action == "poll",
+                            onClick = { action = "poll" }, label = { Text("📊 Опрос") })
                     }
                     Spacer(Modifier.height(8.dp))
                     if (action == "text") {
@@ -362,6 +408,9 @@ fun LocalBotScreen(
                             placeholder = { Text("Привет, {user}!") },
                             modifier = Modifier.fillMaxWidth().height(90.dp),
                         )
+                        Text("Подстановки: {user}, {username}, {user_id}, {chat_id}, {args}, {arg1}, {bot}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else if (action == "script") {
                         Text("Сохранишь правило — открой «✎ код» и напиши JS-логику (функция handle(e)).",
                             style = MaterialTheme.typography.bodySmall)
@@ -390,9 +439,85 @@ fun LocalBotScreen(
                                 FilterChip(selected = dice == d, onClick = { dice = d }, label = { Text(d) })
                             }
                         }
+                    } else if (action == "media") {
+                        com.botcontrol.admin.ui.components.DropdownField(
+                            value = mediaType,
+                            options = listOf("photo", "sticker", "animation", "document", "video", "voice", "audio"),
+                            label = "Тип медиа",
+                            display = {
+                                when (it) {
+                                    "sticker" -> "Стикер"
+                                    "animation" -> "GIF / анимация"
+                                    "document" -> "Файл / документ"
+                                    "video" -> "Видео"
+                                    "voice" -> "Голосовое"
+                                    "audio" -> "Аудио"
+                                    else -> "Фото"
+                                }
+                            },
+                            onSelect = { mediaType = it },
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            mediaRef, { mediaRef = it },
+                            label = { Text("file_id, https:// URL или путь к файлу") },
+                            singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            response, { response = it },
+                            label = { Text("Подпись (необязательно)") },
+                            modifier = Modifier.fillMaxWidth().height(72.dp),
+                        )
+                    } else if (action == "poll") {
+                        OutlinedTextField(
+                            pollQuestion, { pollQuestion = it },
+                            label = { Text("Вопрос опроса") },
+                            singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            pollOptsText, { pollOptsText = it },
+                            label = { Text("Варианты (по одному на строке, от 2 до 10)") },
+                            modifier = Modifier.fillMaxWidth().height(90.dp),
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = pollAnon, onCheckedChange = { pollAnon = it })
+                            Text("Анонимный", style = MaterialTheme.typography.bodySmall)
+                            Checkbox(checked = pollMulti, onCheckedChange = { pollMulti = it })
+                            Text("Несколько ответов", style = MaterialTheme.typography.bodySmall)
+                        }
                     } else {
                         Text("Ответ сгенерирует локальный ИИ (вкладка «Модели ИИ»).",
                             style = MaterialTheme.typography.bodySmall)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    TextButton(onClick = { showDeliveryOpts = !showDeliveryOpts }) {
+                        Text(if (showDeliveryOpts) "▲ Скрыть опции отправки" else "▼ Опции отправки (HTML, цитата, тихо…)")
+                    }
+                    if (showDeliveryOpts) {
+                        Text("Разметка текста (parse_mode):", style = MaterialTheme.typography.bodySmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("" to "Обычный", "HTML" to "HTML", "MarkdownV2" to "MarkdownV2").forEach { (pm, lbl) ->
+                                FilterChip(selected = parseMode == pm, onClick = { parseMode = pm }, label = { Text(lbl) })
+                            }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = disablePreview, onCheckedChange = { disablePreview = it })
+                            Text("Без превью ссылок", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = silent, onCheckedChange = { silent = it })
+                            Text("Тихое уведомление (без звука)", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = protectContent, onCheckedChange = { protectContent = it })
+                            Text("Запретить пересылку/копирование", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = replyTo, onCheckedChange = { replyTo = it })
+                            Text("Отвечать с цитатой (reply_to)", style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                     Spacer(Modifier.height(8.dp))
                     if (action != "llm") {
@@ -404,9 +529,24 @@ fun LocalBotScreen(
                 }
             },
             confirmButton = {
+                val pollOpts = pollOptsText.lines().map { it.trim() }.filter { it.isNotBlank() }.take(10)
                 TextButton(
                     onClick = {
                         scope.launch {
+                            val opts = com.botcontrol.admin.data.RuleOptions(
+                                parseMode = parseMode,
+                                disablePreview = disablePreview,
+                                silent = silent,
+                                protectContent = protectContent,
+                                replyTo = replyTo,
+                                wholeWord = wholeWord,
+                                mediaType = if (action == "media") mediaType else "",
+                                mediaRef = if (action == "media") mediaRef.trim() else "",
+                                pollQuestion = if (action == "poll") pollQuestion.trim() else "",
+                                pollOptions = if (action == "poll") pollOpts else emptyList(),
+                                pollAnonymous = pollAnon,
+                                pollMultiple = pollMulti,
+                            )
                             val id = repository.saveBotRule(
                                 BotRuleEntity(
                                     id = initial?.id ?: 0,
@@ -414,7 +554,8 @@ fun LocalBotScreen(
                                     enabled = initial?.enabled ?: true,
                                     type = type, pattern = pattern.trim(),
                                     responseText = when (action) {
-                                        "text" -> response
+                                        "text", "media" -> response
+                                        "poll" -> pollQuestion.trim()
                                         "dice" -> dice
                                         else -> ""
                                     },
@@ -424,6 +565,7 @@ fun LocalBotScreen(
                                     script = if (action == "anim") com.botcontrol.admin.data.Anim.encode(animSpec)
                                         else if (initial?.actionType == "anim") "" else initial?.script.orEmpty(),
                                     menu = com.botcontrol.admin.data.BotJson.save(ruleMenu),
+                                    options = com.botcontrol.admin.data.BotJson.save(opts),
                                 )
                             )
                             showAddRule = false
@@ -432,8 +574,10 @@ fun LocalBotScreen(
                             if (action == "script" && initial == null) onOpenScript(id.toInt())
                         }
                     },
-                    enabled = pattern.isNotBlank() && when (action) {
+                    enabled = pattern.isNotBlank() && regexValid && when (action) {
                         "text" -> response.isNotBlank()
+                        "media" -> mediaRef.isNotBlank()
+                        "poll" -> pollQuestion.isNotBlank() && pollOpts.size >= 2
                         "anim" -> animSpec.preset != "custom" || animSpec.frames.isNotEmpty()
                         "pack" -> packId.isNotBlank() || packs.isNotEmpty()
                         else -> true

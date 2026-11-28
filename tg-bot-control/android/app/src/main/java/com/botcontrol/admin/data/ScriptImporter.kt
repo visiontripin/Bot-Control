@@ -31,13 +31,14 @@ object ScriptImporter {
     /** Правило ответа из кода. packId — «imp_<КОНСТАНТА>» (при применении
      *  переименовывается под конкретного бота). */
     data class ImportedRule(
-        val type: String,          // command | button | contains
-        val pattern: String,       // "/start" | надпись кнопки | фраза
-        val actionType: String,    // text | pack | llm | script | anim | dice
+        val type: String,          // command | button | contains | regex
+        val pattern: String,       // "/start" | надпись кнопки | фраза | regex
+        val actionType: String,    // text | pack | llm | script | anim | dice | media | poll
         val text: String = "",
         val packId: String = "",
         val script: String = "",
         val menu: List<InlineBtn> = emptyList(),
+        val options: RuleOptions = RuleOptions(),
     )
 
     /** Блок сводки для экрана импорта: ключ категории, заголовок, детали. */
@@ -65,9 +66,12 @@ object ScriptImporter {
         val commands: List<ImportedRule> get() = rules.filter { it.type == "command" }
         val textRules: List<ImportedRule> get() = rules.filter { it.type != "command" }
 
-        /** Все inline-кнопки: правила + события. */
+        /** Все inline-кнопки: правила + события (включая вложенные подменю). */
         val allButtons: List<InlineBtn>
-            get() = rules.flatMap { it.menu } + schedule.flatMap { it.menu }
+            get() {
+                fun flat(list: List<InlineBtn>): List<InlineBtn> = list.flatMap { listOf(it) + flat(it.submenu) }
+                return flat(rules.flatMap { it.menu } + schedule.flatMap { it.menu })
+            }
 
         fun isEmpty(): Boolean = systemPrompt == null && temperature == null &&
             maxTokens == null && topK == null && historyLimit == null &&
@@ -132,6 +136,7 @@ object ScriptImporter {
             val head = when (r.type) {
                 "command" -> r.pattern
                 "button" -> "Кнопка «${r.pattern}»"
+                "regex" -> "Regex «${r.pattern}»"
                 else -> "Содержит «${r.pattern}»"
             }
             val act = when (r.actionType) {
@@ -141,6 +146,8 @@ object ScriptImporter {
                 "script" -> "скрипт JS"
                 "anim" -> "анимация: " + Anim.describe(Anim.decode(r.script))
                 "dice" -> "кубик ${r.text}"
+                "media" -> "медиа (${r.options.mediaType.ifBlank { "photo" }})"
+                "poll" -> "опрос «${r.options.pollQuestion.take(30)}»"
                 else -> "текст (${r.text.length} симв.)"
             }
             val btns = if (r.menu.isNotEmpty())
@@ -209,7 +216,14 @@ private class Parser(
     private enum class Kind { SEND, EDIT, TOAST, LLM }
     private data class Helper(val kind: Kind, val textIndex: Int, val markupIndex: Int, val fixedMarkup: String?)
 
-    private data class KbButton(val label: String, val callback: String? = null, val url: String? = null)
+    private data class KbButton(
+        val label: String,
+        val callback: String? = null,
+        val url: String? = null,
+        val webAppUrl: String? = null,
+        val copyText: String? = null,
+        val switchInline: String? = null,
+    )
     private data class Keyboard(val inline: Boolean, val rows: List<List<KbButton>>)
 
     private val packHelpers = HashMap<String, String>()
@@ -226,7 +240,7 @@ private class Parser(
     private val cbBranches = LinkedHashMap<String, Branch>()
 
     private data class Action(
-        val kind: String = "none",   // text | pack | llm | script | on | off | anim | dice | none
+        val kind: String = "none",   // text | pack | llm | script | on | off | anim | dice | media | poll | none
         val text: String = "",
         val pack: String = "",
         val script: String = "",
@@ -235,6 +249,17 @@ private class Parser(
         val toastNoChange: String = "",
         val markup: MarkupRef? = null,
         val anim: AnimSpec? = null,
+        val parseMode: String = "",
+        val disablePreview: Boolean = false,
+        val silent: Boolean = false,
+        val protectContent: Boolean = false,
+        val replyTo: Boolean = false,
+        val mediaType: String = "",
+        val mediaRef: String = "",
+        val pollQuestion: String = "",
+        val pollOptions: List<String> = emptyList(),
+        val pollAnonymous: Boolean = true,
+        val pollMultiple: Boolean = false,
     )
 
     /** Ссылка на клавиатуру из reply_markup: функция или локальная разметка. */
@@ -259,7 +284,7 @@ private class Parser(
             for (deco in f.decoratorRanges) {
                 val d = decoratorInfo(deco) ?: continue
                 if (d.callback) continue
-                if (d.commands.isEmpty() && d.buttons.isEmpty() && d.contains.isEmpty()) continue
+                if (d.commands.isEmpty() && d.buttons.isEmpty() && d.contains.isEmpty() && d.regexes.isEmpty()) continue
                 val act = analyze(f, f.body, f.inlineBody)
                 val (menu, replyKb) = splitMarkup(act.markup, f.name)
                 if (replyKb != null) {
@@ -283,6 +308,10 @@ private class Parser(
                 d.contains.forEach { word ->
                     rules.add(base.copy(type = "contains", pattern = word))
                     addedPatterns.add("«$word»")
+                }
+                d.regexes.forEach { rx ->
+                    rules.add(base.copy(type = "regex", pattern = rx))
+                    addedPatterns.add("regex:$rx")
                 }
                 if (addedPatterns.isNotEmpty() && base.actionType == "text" && base.text.isBlank()) {
                     val hint = if (act.kind == "none") {
@@ -331,12 +360,22 @@ private class Parser(
                 "или 4-м элементом события расписания (ЧАС, МИН, \"текст\", $it())")
         }
 
+        val allBtnsFlat = ArrayList<InlineBtn>()
+        fun collectBtns(list: List<InlineBtn>) {
+            for (b in list) {
+                allBtnsFlat.add(b)
+                if (b.submenu.isNotEmpty()) collectBtns(b.submenu)
+            }
+        }
+        rules.forEach { collectBtns(it.menu) }
+        schedule.forEach { collectBtns(it.menu) }
+
         val referencedPacks = HashSet<String>()
-        (rules.map { it.packId } + (rules.flatMap { it.menu } + schedule.flatMap { it.menu }).map { it.packId })
+        (rules.map { it.packId } + allBtnsFlat.map { it.packId })
             .filter { it.startsWith("imp_") }.forEach { referencedPacks.add(it.removePrefix("imp_")) }
         // набор внутри анимации (pack= у play_animation)
         (rules.filter { it.actionType == "anim" }.map { it.script } +
-            (rules.flatMap { it.menu } + schedule.flatMap { it.menu }).filter { it.action == "anim" }.map { it.script })
+            allBtnsFlat.filter { it.action == "anim" }.map { it.script })
             .map { Anim.decode(it).packId }.filter { it.startsWith("imp_") }
             .forEach { referencedPacks.add(it.removePrefix("imp_")) }
 
@@ -579,9 +618,22 @@ private class Parser(
         return Keyboard(inline, rows)
     }
 
+    private fun extractNestedStr(e: PyExpr?, f: PySource.PyFunc?, kwKey: String): String? = when (e) {
+        is PyExpr.Str -> normalizeText(e.value)
+        is PyExpr.Call -> strOf(e.kwargs[kwKey] ?: e.args.firstOrNull(), f)
+        else -> strOf(e, f)
+    }
+
     private fun builderButton(c: PyExpr.Call, f: PySource.PyFunc): KbButton? {
         val label = strOf(c.arg(0, "text"), f) ?: return null
-        return KbButton(label, strOf(c.kwargs["callback_data"], f), strOf(c.kwargs["url"], f))
+        return KbButton(
+            label = label,
+            callback = strOf(c.kwargs["callback_data"], f),
+            url = strOf(c.kwargs["url"], f),
+            webAppUrl = extractNestedStr(c.kwargs["web_app"], f, "url"),
+            copyText = extractNestedStr(c.kwargs["copy_text"], f, "text"),
+            switchInline = strOf(c.kwargs["switch_inline_query_current_chat"], f),
+        )
     }
 
     /** Методы, вызванные цепочкой сразу после выражения: ").row(…).add(…)". */
@@ -612,7 +664,14 @@ private class Parser(
     private fun button(e: PyExpr, f: PySource.PyFunc?, depth: Int = 0): KbButton? = when (e) {
         is PyExpr.Call -> when (e.shortFn) {
             "InlineKeyboardButton", "KeyboardButton" -> strOf(e.arg(0, "text"), f)?.let { label ->
-                KbButton(label, strOf(e.kwargs["callback_data"], f), strOf(e.kwargs["url"], f))
+                KbButton(
+                    label = label,
+                    callback = strOf(e.kwargs["callback_data"], f),
+                    url = strOf(e.kwargs["url"], f),
+                    webAppUrl = extractNestedStr(cKw(e, "web_app"), f, "url"),
+                    copyText = extractNestedStr(cKw(e, "copy_text"), f, "text"),
+                    switchInline = strOf(e.kwargs["switch_inline_query_current_chat"], f),
+                )
             }
             else -> null
         }
@@ -622,6 +681,8 @@ private class Parser(
                 ?: strConsts[e.id]?.let { KbButton(it) }
         else -> null
     }
+
+    private fun cKw(c: PyExpr.Call, key: String): PyExpr? = c.kwargs[key]
 
     private fun strOf(e: PyExpr?, f: PySource.PyFunc?): String? = when (e) {
         is PyExpr.Str -> normalizeText(e.value)
@@ -650,6 +711,7 @@ private class Parser(
         val commands: List<String> = emptyList(),
         val buttons: List<String> = emptyList(),
         val contains: List<String> = emptyList(),
+        val regexes: List<String> = emptyList(),
         val callbackIds: List<String> = emptyList(),
         val dispatcher: Boolean = false,
     )
@@ -693,9 +755,10 @@ private class Parser(
             }
         }
         if (commands.isNotEmpty()) return Deco(callback = false, commands = commands.distinct())
-        // текстовые фильтры
+        // текстовые фильтры и regexp
         val buttons = ArrayList<String>()
         val contains = ArrayList<String>()
+        val regexes = ArrayList<String>()
         call?.kwargs?.get("text")?.let { te ->
             when (te) {
                 is PyExpr.Str -> buttons.add(te.value)
@@ -703,14 +766,24 @@ private class Parser(
                 else -> {}
             }
         }
-        call?.kwargs?.get("regexp")?.let { (it as? PyExpr.Str)?.value }?.let { rx ->
+        fun addRegex(rx: String) {
             val plain = rx.trim('^', '$').replace("(?i)", "")
-            if (plain.isNotBlank() && plain.none { it in "[]()*+?{}|\\" }) contains.add(plain)
-            else warnings.add("Фильтр regexp=\"$rx\" слишком сложный — правило не создано")
+            if (plain.isNotBlank() && plain.none { it in "[]()*+?{}|\\" }) {
+                contains.add(plain)
+            } else if (rx.isNotBlank()) {
+                if (runCatching { Regex(rx) }.isSuccess) regexes.add(rx)
+                else warnings.add("Фильтр regexp=\"$rx\" некорректен — правило не создано")
+            }
+        }
+        call?.kwargs?.get("regexp")?.let { (it as? PyExpr.Str)?.value }?.let(::addRegex)
+        src.calls(region.first, region.last + 1).forEach { c ->
+            if (c.shortFn == "regexp") {
+                strOf(c.args.firstOrNull(), null)?.let(::addRegex)
+            }
         }
         textFilters(region.first, region.last + 1, buttons, contains)
-        if (buttons.isEmpty() && contains.isEmpty()) return Deco(callback = false)
-        return Deco(callback = false, buttons = buttons.distinct(), contains = contains.distinct())
+        if (buttons.isEmpty() && contains.isEmpty() && regexes.isEmpty()) return Deco(callback = false)
+        return Deco(callback = false, buttons = buttons.distinct(), contains = contains.distinct(), regexes = regexes.distinct())
     }
 
     /** callback_data из фильтра: c.data == "x", F.data == "x", data in ("a", "b"). */
@@ -803,18 +876,91 @@ private class Parser(
         /** Всплывашка; [beforeReturn] — сразу за ней в коде стоит «return». */
         class Toast(off: Int, val text: String, val beforeReturn: Boolean = false) : Ev(off)
         class Return(off: Int) : Ev(off)
-        class Send(off: Int, val textE: PyExpr?, val markup: PyExpr?, val fixedMarkup: String?) : Ev(off)
-        class Edit(off: Int, val textE: PyExpr?, val markup: PyExpr?, val fixedMarkup: String?) : Ev(off)
+        class Send(
+            off: Int,
+            val textE: PyExpr?,
+            val markup: PyExpr?,
+            val fixedMarkup: String?,
+            val parseMode: String = "",
+            val disablePreview: Boolean = false,
+            val silent: Boolean = false,
+            val protectContent: Boolean = false,
+            val replyTo: Boolean = false,
+        ) : Ev(off)
+        class Edit(
+            off: Int,
+            val textE: PyExpr?,
+            val markup: PyExpr?,
+            val fixedMarkup: String?,
+            val parseMode: String = "",
+            val disablePreview: Boolean = false,
+        ) : Ev(off)
         class Flag(off: Int, val value: Boolean) : Ev(off)
         class Llm(off: Int) : Ev(off)
         class Script(off: Int, val code: String) : Ev(off)
         class Anim(off: Int, val spec: AnimSpec, val markup: PyExpr?, val edit: Boolean) : Ev(off)
         class Dice(off: Int, val emoji: String) : Ev(off)
+        class Media(
+            off: Int,
+            val mediaType: String,
+            val mediaRef: String,
+            val captionE: PyExpr?,
+            val markup: PyExpr?,
+            val fixedMarkup: String?,
+            val parseMode: String = "",
+            val silent: Boolean = false,
+            val protectContent: Boolean = false,
+            val replyTo: Boolean = false,
+        ) : Ev(off)
+        class Poll(
+            off: Int,
+            val question: String,
+            val options: List<String>,
+            val isAnonymous: Boolean = true,
+            val allowsMultiple: Boolean = false,
+            val markup: PyExpr?,
+            val silent: Boolean = false,
+            val protectContent: Boolean = false,
+            val replyTo: Boolean = false,
+        ) : Ev(off)
     }
 
     private val runLikeRe = Regex("""(?i)(run|remind|schedul|active|enabled|started|working|notif|alarm|paused)""")
     private val msgRecvRe = Regex("""(^|\.)(message|msg|m)\.(answer|reply)$""")
     private val cbRecvRe = Regex("""^(call|callback|query|c|cb|callback_query|q)\.answer$""")
+
+    private fun parseModeOf(e: PyExpr?, f: PySource.PyFunc?): String {
+        val raw = when (e) {
+            is PyExpr.Str -> e.value.trim()
+            is PyExpr.Name -> strConsts[e.id]?.trim() ?: e.id
+            else -> e?.let { src.maskedOf(it).substringAfterLast('.').trim() }.orEmpty()
+        }
+        return when (raw.uppercase()) {
+            "HTML" -> "HTML"
+            "MARKDOWN_V2", "MARKDOWNV2" -> "MarkdownV2"
+            "MARKDOWN" -> "Markdown"
+            else -> ""
+        }
+    }
+
+    private fun boolConst(e: PyExpr?): Boolean = (e as? PyExpr.Const)?.value == true
+
+    private fun listStrOf(e: PyExpr?, f: PySource.PyFunc?): List<String> = when (e) {
+        is PyExpr.Seq -> e.items.mapNotNull { strOf(it, f) }.filter { it.isNotBlank() }
+        is PyExpr.Name -> listConsts[e.id].orEmpty()
+        else -> emptyList()
+    }
+
+    private fun mediaTypeOf(shortFn: String): String? = when (shortFn) {
+        "send_photo", "answer_photo", "reply_photo" -> "photo"
+        "send_sticker", "answer_sticker", "reply_sticker" -> "sticker"
+        "send_animation", "answer_animation", "reply_animation" -> "animation"
+        "send_document", "answer_document", "reply_document" -> "document"
+        "send_video", "answer_video", "reply_video" -> "video"
+        "send_voice", "answer_voice", "reply_voice" -> "voice"
+        "send_audio", "answer_audio", "reply_audio" -> "audio"
+        else -> null
+    }
 
     private fun analyze(f: PySource.PyFunc, lines: List<PySource.LLine>, inline: IntRange?): Action {
         val ranges = ArrayList<IntRange>()
@@ -842,6 +988,13 @@ private class Parser(
             for (c in src.calls(r.first, r.last + 1)) {
                 if (!seen.add(c.start)) continue
                 val h = helpers[c.fn] ?: helpers[c.shortFn]
+                val pm = parseModeOf(c.kwargs["parse_mode"], f)
+                val noPreview = boolConst(c.kwargs["disable_web_page_preview"]) ||
+                    (c.kwargs["link_preview_options"]?.let { src.maskedOf(it).contains("True") } == true)
+                val silent = boolConst(c.kwargs["disable_notification"])
+                val protect = boolConst(c.kwargs["protect_content"])
+                val replyTo = c.kwargs.containsKey("reply_to_message_id") || c.kwargs.containsKey("reply_parameters")
+                val mType = mediaTypeOf(c.shortFn)
                 when {
                     c.fn in animHelpers || c.shortFn in animHelpers ->
                         animFromCall(c, f)?.let { evs.add(it) }
@@ -849,22 +1002,60 @@ private class Parser(
                         val e = strOf(c.kwargs["emoji"] ?: c.args.getOrNull(1), f).orEmpty()
                         evs.add(Ev.Dice(c.start, e.ifBlank { "🎲" }))
                     }
+                    c.shortFn == "send_poll" || c.shortFn == "answer_poll" -> {
+                        val isMsg = c.shortFn == "answer_poll"
+                        val q = strOf(if (isMsg) c.arg(0, "question") else c.arg(1, "question"), f).orEmpty()
+                        val opts = listStrOf(if (isMsg) c.arg(1, "options") else c.arg(2, "options"), f)
+                        if (q.isNotBlank() && opts.size >= 2) {
+                            evs.add(Ev.Poll(
+                                off = c.start,
+                                question = q,
+                                options = opts,
+                                isAnonymous = (c.kwargs["is_anonymous"] as? PyExpr.Const)?.value ?: true,
+                                allowsMultiple = boolConst(c.kwargs["allows_multiple_answers"]),
+                                markup = c.kwargs["reply_markup"],
+                                silent = silent,
+                                protectContent = protect,
+                                replyTo = replyTo,
+                            ))
+                        }
+                    }
+                    mType != null -> {
+                        val isMsg = c.shortFn.startsWith("answer_") || c.shortFn.startsWith("reply_")
+                        val refIdx = if (isMsg) 0 else 1
+                        val refExpr = c.kwargs[mType] ?: c.args.getOrNull(refIdx)
+                        val ref = strOf(refExpr, f).orEmpty()
+                        if (ref.isNotBlank()) {
+                            evs.add(Ev.Media(
+                                off = c.start,
+                                mediaType = mType,
+                                mediaRef = ref,
+                                captionE = c.kwargs["caption"],
+                                markup = c.kwargs["reply_markup"],
+                                fixedMarkup = null,
+                                parseMode = pm,
+                                silent = silent,
+                                protectContent = protect,
+                                replyTo = replyTo,
+                            ))
+                        }
+                    }
                     c.shortFn == "answer_callback_query" ->
                         strOf(c.arg(1, "text"), f)?.let { evs.add(Ev.Toast(c.start, it)) }
                     h?.kind == Kind.TOAST -> strOf(c.args.getOrNull(h.textIndex), f)?.let { evs.add(Ev.Toast(c.start, it)) }
                     cbRecvRe.matches(c.fn) -> strOf(c.arg(0, "text"), f)?.let { evs.add(Ev.Toast(c.start, it)) }
                     c.shortFn == "send_message" || c.shortFn == "reply_to" ->
-                        evs.add(Ev.Send(c.start, c.arg(1, "text"), c.kwargs["reply_markup"], null))
+                        evs.add(Ev.Send(c.start, c.arg(1, "text"), c.kwargs["reply_markup"], null, pm, noPreview, silent, protect, replyTo))
                     h?.kind == Kind.SEND -> evs.add(Ev.Send(c.start, c.args.getOrNull(h.textIndex),
-                        c.kwargs["reply_markup"] ?: c.args.getOrNull(h.markupIndex), h.fixedMarkup))
+                        c.kwargs["reply_markup"] ?: c.args.getOrNull(h.markupIndex), h.fixedMarkup, pm, noPreview, silent, protect, replyTo))
                     msgRecvRe.containsMatchIn(c.fn) ->
-                        evs.add(Ev.Send(c.start, c.arg(0, "text"), c.kwargs["reply_markup"], null))
+                        evs.add(Ev.Send(c.start, c.arg(0, "text"), c.kwargs["reply_markup"], null, pm, noPreview, silent, protect, replyTo))
                     c.shortFn == "edit_message_text" || c.fn.endsWith(".edit_text") ->
-                        evs.add(Ev.Edit(c.start, c.arg(0, "text"), c.kwargs["reply_markup"], null))
+                        evs.add(Ev.Edit(c.start, c.arg(0, "text"), c.kwargs["reply_markup"], null, pm, noPreview))
                     h?.kind == Kind.EDIT -> evs.add(Ev.Edit(c.start,
                         if (h.textIndex >= 0) c.args.getOrNull(h.textIndex)
                         else c.args.firstOrNull { it !is PyExpr.Name || it.id !in setOf("call", "c", "callback", "query") },
-                        c.kwargs["reply_markup"] ?: c.args.getOrNull(h.markupIndex), h.fixedMarkup))
+                        c.kwargs["reply_markup"] ?: c.args.getOrNull(h.markupIndex), h.fixedMarkup, pm, noPreview))
                     h?.kind == Kind.LLM || llmNameRe.containsMatchIn(c.shortFn) -> evs.add(Ev.Llm(c.start))
                     c.shortFn == "run_script" -> strOf(c.arg(0, "code"), f)?.let { evs.add(Ev.Script(c.start, it)) }
                 }
@@ -889,6 +1080,36 @@ private class Parser(
         evs.filterIsInstance<Ev.Dice>().firstOrNull()?.let { d ->
             return Action(kind = "dice", text = d.emoji, toast = toasts.firstOrNull()?.text.orEmpty())
         }
+        evs.filterIsInstance<Ev.Poll>().firstOrNull()?.let { p ->
+            return Action(
+                kind = "poll",
+                text = p.question,
+                toast = toasts.firstOrNull()?.text.orEmpty(),
+                markup = markupRef(p.markup, null, f),
+                silent = p.silent,
+                protectContent = p.protectContent,
+                replyTo = p.replyTo,
+                pollQuestion = p.question,
+                pollOptions = p.options,
+                pollAnonymous = p.isAnonymous,
+                pollMultiple = p.allowsMultiple,
+            )
+        }
+        evs.filterIsInstance<Ev.Media>().firstOrNull()?.let { m ->
+            val cap = strOf(m.captionE, f).orEmpty()
+            return Action(
+                kind = "media",
+                text = cap,
+                toast = toasts.firstOrNull()?.text.orEmpty(),
+                markup = markupRef(m.markup, m.fixedMarkup, f),
+                parseMode = m.parseMode,
+                silent = m.silent,
+                protectContent = m.protectContent,
+                replyTo = m.replyTo,
+                mediaType = m.mediaType,
+                mediaRef = m.mediaRef,
+            )
+        }
         val flag = evs.filterIsInstance<Ev.Flag>().lastOrNull()
         if (flag != null) {
             val edit = evs.filterIsInstance<Ev.Edit>().firstOrNull { it.off > flag.off }
@@ -911,15 +1132,35 @@ private class Parser(
                 toast = success,
                 toastNoChange = noChange,
                 markup = markupRef(edit?.markup, edit?.fixedMarkup, f),
+                parseMode = edit?.parseMode ?: send?.parseMode.orEmpty(),
             )
         }
         val chosen = evs.firstOrNull { it is Ev.Send || it is Ev.Edit }
         val toast = toasts.firstOrNull()?.text.orEmpty()
         if (chosen != null) {
-            val (textE, markupE, fixed) = when (chosen) {
-                is Ev.Send -> Triple(chosen.textE, chosen.markup, chosen.fixedMarkup)
-                is Ev.Edit -> Triple(chosen.textE, chosen.markup, chosen.fixedMarkup)
-                else -> Triple(null, null, null)
+            val textE: PyExpr?
+            val markupE: PyExpr?
+            val fixed: String?
+            val pm: String
+            val noPrev: Boolean
+            val silent: Boolean
+            val protect: Boolean
+            val replyTo: Boolean
+            when (chosen) {
+                is Ev.Send -> {
+                    textE = chosen.textE; markupE = chosen.markup; fixed = chosen.fixedMarkup
+                    pm = chosen.parseMode; noPrev = chosen.disablePreview
+                    silent = chosen.silent; protect = chosen.protectContent; replyTo = chosen.replyTo
+                }
+                is Ev.Edit -> {
+                    textE = chosen.textE; markupE = chosen.markup; fixed = chosen.fixedMarkup
+                    pm = chosen.parseMode; noPrev = chosen.disablePreview
+                    silent = false; protect = false; replyTo = false
+                }
+                else -> {
+                    textE = null; markupE = null; fixed = null
+                    pm = ""; noPrev = false; silent = false; protect = false; replyTo = false
+                }
             }
             val tv = resolveText(textE, f)
             val kind = when (tv.kind) {
@@ -930,9 +1171,20 @@ private class Parser(
             if (tv.kind == "unknown" && kind == "text") {
                 warnings.add("${f.name}(): текст ответа вычисляется в коде — перенесён как «…», поправь в правилах")
             }
-            return Action(kind = kind, text = if (kind == "text") tv.text.ifBlank { if (tv.kind == "unknown") "…" else "" } else "",
-                pack = tv.pack, script = tv.script, edit = chosen is Ev.Edit, toast = toast,
-                markup = markupRef(markupE, fixed, f))
+            return Action(
+                kind = kind,
+                text = if (kind == "text") tv.text.ifBlank { if (tv.kind == "unknown") "…" else "" } else "",
+                pack = tv.pack,
+                script = tv.script,
+                edit = chosen is Ev.Edit,
+                toast = toast,
+                markup = markupRef(markupE, fixed, f),
+                parseMode = pm,
+                disablePreview = noPrev,
+                silent = silent,
+                protectContent = protect,
+                replyTo = replyTo,
+            )
         }
         evs.firstOrNull { it is Ev.Script }?.let { return Action(kind = "script", script = (it as Ev.Script).code, toast = toast) }
         if (evs.any { it is Ev.Llm }) return Action(kind = "llm", toast = toast)
@@ -1034,19 +1286,38 @@ private class Parser(
         return if (ref.kb.inline) inlineMenu(ref.kb, ref.fn) to null else emptyList<InlineBtn>() to ref
     }
 
-    private fun ruleFromAction(a: Action, menu: List<InlineBtn>): ScriptImporter.ImportedRule =
-        ScriptImporter.ImportedRule(
-            type = "command", pattern = "",
+    private fun ruleFromAction(a: Action, menu: List<InlineBtn>): ScriptImporter.ImportedRule {
+        val opts = RuleOptions(
+            parseMode = a.parseMode,
+            disablePreview = a.disablePreview,
+            silent = a.silent,
+            protectContent = a.protectContent,
+            replyTo = a.replyTo,
+            mediaType = a.mediaType,
+            mediaRef = a.mediaRef,
+            pollQuestion = a.pollQuestion,
+            pollOptions = a.pollOptions,
+            pollAnonymous = a.pollAnonymous,
+            pollMultiple = a.pollMultiple,
+        )
+        return ScriptImporter.ImportedRule(
+            type = "command",
+            pattern = "",
             actionType = when (a.kind) {
-                "pack" -> "pack"; "llm" -> "llm"; "script" -> "script"; "anim" -> "anim"; "dice" -> "dice"
+                "pack" -> "pack"; "llm" -> "llm"; "script" -> "script"
+                "anim" -> "anim"; "dice" -> "dice"; "media" -> "media"; "poll" -> "poll"
                 else -> "text"
             },
-            text = if (a.kind == "text" || a.kind == "none" || a.kind == "on" || a.kind == "off" ||
-                a.kind == "dice") a.text else "",
+            text = when (a.kind) {
+                "text", "none", "on", "off", "dice", "media", "poll" -> a.text
+                else -> ""
+            },
             packId = if (a.kind == "pack") packIdFor(a.pack) else "",
             script = if (a.kind == "anim" && a.anim != null) Anim.encode(a.anim) else a.script,
             menu = menu,
+            options = opts,
         )
+    }
 
     // ------------------------------------------------------------------
     // inline-меню: кнопки + действия из обработчиков нажатий
@@ -1059,7 +1330,12 @@ private class Parser(
         analyze(br.func, br.lines, br.inline)
     }
 
-    private fun inlineMenu(kb: Keyboard, ownerFn: String?): List<InlineBtn> {
+    private fun inlineMenu(
+        kb: Keyboard,
+        ownerFn: String?,
+        depth: Int = 0,
+        visited: Set<String> = emptySet(),
+    ): List<InlineBtn> {
         val out = ArrayList<InlineBtn>()
         kb.rows.forEachIndexed { r, row ->
             row.forEach { b ->
@@ -1067,10 +1343,21 @@ private class Parser(
                     warnings.add("ℹ️ Надпись inline-кнопки «${b.label.take(20)}…» обрезана: было ${b.label.length} симв., сохранено 64")
                 }
                 val label = b.label.take(64)
+                val slug = label.filter { it.isLetterOrDigit() }.take(12).lowercase().ifBlank { "btn" }
+                if (b.webAppUrl != null) {
+                    out.add(InlineBtn(id = "wa_$slug", label = label, action = "web_app", url = b.webAppUrl, row = r + 1))
+                    return@forEach
+                }
+                if (b.copyText != null) {
+                    out.add(InlineBtn(id = "cp_$slug", label = label, action = "copy_text", text = b.copyText, row = r + 1))
+                    return@forEach
+                }
+                if (b.switchInline != null) {
+                    out.add(InlineBtn(id = "sw_$slug", label = label, action = "switch_inline", text = b.switchInline, row = r + 1))
+                    return@forEach
+                }
                 if (b.url != null) {
-                    val slug = label.filter { it.isLetterOrDigit() }.take(12).lowercase()
-                        .ifBlank { "link" }
-                    out.add(InlineBtn(id = "url_$slug", label = label, action = "url",
+                    out.add(InlineBtn(id = "url_${slug.ifBlank { "link" }}", label = label, action = "url",
                         url = b.url, row = r + 1))
                     return@forEach
                 }
@@ -1095,36 +1382,57 @@ private class Parser(
                     out.add(InlineBtn(id = id, label = label, action = "text", row = r + 1))
                     return@forEach
                 }
-                if (act.markup != null && act.markup.fn != ownerFn && act.markup.kb.inline &&
-                    act.markup.fn != null) {
-                    attachedKeyboards.add(act.markup.fn)
-                    warnings.add("Кнопка «$label» открывает другое меню ${act.markup.fn}() — вложенные меню пока не поддерживаются")
+                val subTarget = act.markup?.takeIf {
+                    it.kb.inline && it.fn != null && it.fn != ownerFn &&
+                        (act.kind == "text" || act.kind == "none")
+                }
+                if (subTarget != null && subTarget.fn != null) {
+                    attachedKeyboards.add(subTarget.fn)
+                    if (depth < 3 && subTarget.fn !in visited) {
+                        val children = inlineMenu(subTarget.kb, subTarget.fn, depth + 1, visited + subTarget.fn)
+                        out.add(InlineBtn(
+                            id = id,
+                            label = label,
+                            toast = act.toast,
+                            action = "submenu",
+                            text = act.text,
+                            edit = true,
+                            row = r + 1,
+                            submenu = children,
+                            menuTarget = subTarget.fn,
+                            parseMode = act.parseMode,
+                        ))
+                        return@forEach
+                    } else {
+                        warnings.add("Кнопка «$label»: подменю ${subTarget.fn}() глубже 3 уровней или зациклено — пропущено")
+                    }
                 }
                 out.add(when (act.kind) {
                     "on", "off" -> InlineBtn(id = id, label = label, toast = act.toast,
                         action = if (act.kind == "on") "reminders_on" else "reminders_off",
-                        text = act.text, toastNoChange = act.toastNoChange, row = r + 1)
+                        text = act.text, toastNoChange = act.toastNoChange, parseMode = act.parseMode, row = r + 1)
                     "pack" -> InlineBtn(id = id, label = label, toast = act.toast, action = "pack",
-                        packId = packIdFor(act.pack), edit = act.edit, row = r + 1)
+                        packId = packIdFor(act.pack), edit = act.edit, parseMode = act.parseMode, row = r + 1)
                     "script" -> InlineBtn(id = id, label = label, toast = act.toast, action = "script",
-                        script = act.script, row = r + 1)
+                        script = act.script, edit = act.edit, parseMode = act.parseMode, row = r + 1)
                     "anim" -> InlineBtn(id = id, label = label, toast = act.toast, action = "anim",
                         script = act.anim?.let { Anim.encode(it) }.orEmpty(), edit = act.edit, row = r + 1)
                     "dice" -> InlineBtn(id = id, label = label, toast = act.toast, action = "dice",
                         text = act.text, row = r + 1)
-                    "llm" -> {
-                        warnings.add("Кнопка «$label» отвечает через ИИ — для кнопок это пока не поддерживается, задай текст")
-                        InlineBtn(id = id, label = label, toast = act.toast, action = "text", row = r + 1)
-                    }
+                    "llm" -> InlineBtn(id = id, label = label, toast = act.toast, action = "llm",
+                        text = act.text, edit = act.edit, parseMode = act.parseMode, row = r + 1)
+                    "media" -> InlineBtn(id = id, label = label, toast = act.toast, action = "media",
+                        text = act.text, mediaType = act.mediaType, mediaRef = act.mediaRef,
+                        parseMode = act.parseMode, row = r + 1)
                     "none" -> {
                         if (act.text.isBlank() && act.toast.isBlank() && act.markup == null) {
                             warnings.add("Кнопка «$label» (callback_data=\"$id\"): действие внутри ветки не распознано (возможно не определён helper)")
                         }
                         InlineBtn(id = id, label = label, toast = act.toast, action = "text",
-                            text = act.text, edit = act.edit, row = r + 1)
+                            text = act.text, edit = act.edit, parseMode = act.parseMode, row = r + 1)
                     }
                     else -> InlineBtn(id = id, label = label, toast = act.toast, action = "text",
-                        text = act.text, edit = act.edit, row = r + 1)
+                        text = act.text, edit = act.edit, parseMode = act.parseMode, row = r + 1)
                 })
             }
         }
@@ -1440,26 +1748,46 @@ private class Parser(
     // прочее
     // ------------------------------------------------------------------
 
+    private fun scopeNameOf(e: PyExpr?): String {
+        val raw = when (e) {
+            is PyExpr.Call -> e.shortFn
+            is PyExpr.Str -> e.value
+            else -> e?.let { src.maskedOf(it) }.orEmpty()
+        }
+        return when {
+            raw.contains("AllPrivateChats", true) || raw == "all_private_chats" -> "all_private_chats"
+            raw.contains("AllGroupChats", true) || raw == "all_group_chats" -> "all_group_chats"
+            raw.contains("AllChatAdministrators", true) || raw == "all_chat_administrators" -> "all_chat_administrators"
+            else -> "default"
+        }
+    }
+
     private fun menuCommands(rules: List<ScriptImporter.ImportedRule>): List<MenuCommand> {
         val out = ArrayList<MenuCommand>()
         for (c in src.calls(0, src.masked.length)) {
             if (c.shortFn != "set_my_commands") continue
             val seq = c.arg(0, "commands") as? PyExpr.Seq ?: continue
+            val scope = scopeNameOf(c.kwargs["scope"])
+            val lang = strOf(c.kwargs["language_code"], null).orEmpty().trim().lowercase()
             for (item in seq.items) {
                 val bc = item as? PyExpr.Call ?: continue
                 val cmd = strOf(bc.arg(0, "command"), null)?.removePrefix("/")?.lowercase() ?: continue
                 val desc = strOf(bc.arg(1, "description"), null).orEmpty()
-                out.add(MenuCommand(cmd, desc.ifBlank { defaultDescription(cmd, rules) }))
+                out.add(MenuCommand(cmd, desc.ifBlank { defaultDescription(cmd, rules) }, scope, lang))
             }
         }
-        val list = if (out.isNotEmpty()) out.distinctBy { it.command }
+        val list = if (out.isNotEmpty()) out.distinctBy { "${it.scope}:${it.languageCode}:${it.command}" }
         else rules.filter { it.type == "command" }.map { it.pattern.removePrefix("/") }
             .filter { Regex("^[a-z0-9_]{1,32}$").matches(it) }
             .map { MenuCommand(it, defaultDescription(it, rules)) }
-        if (list.size > 20) {
-            warnings.add("ℹ️ Меню команд Telegram обрезано до лимита: было ${list.size}, передаётся 20")
+        val result = ArrayList<MenuCommand>()
+        list.groupBy { it.scope to it.languageCode }.forEach { (_, group) ->
+            if (group.size > 20) {
+                warnings.add("ℹ️ Меню команд Telegram обрезано до лимита: было ${group.size}, передаётся 20")
+            }
+            result.addAll(group.take(20))
         }
-        return list.take(20)
+        return result
     }
 
     private fun defaultDescription(cmd: String, rules: List<ScriptImporter.ImportedRule>): String =

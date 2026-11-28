@@ -481,7 +481,11 @@ class LocalBotStore(context: Context) {
     companion object {
         fun computeMenuSignature(tokenKey: String, commands: List<MenuCommand>): String =
             tokenKey + ":" + commands.filter { it.command.isNotBlank() }
-                .joinToString("|") { "${it.command.trim()}=${it.description.trim()}" }
+                .joinToString("|") {
+                    val base = "${it.command.trim()}=${it.description.trim()}"
+                    if (it.scope.isBlank() && it.languageCode.isBlank()) base
+                    else "$base@${it.scope.trim()}:${it.languageCode.trim()}"
+                }
 
         private const val KEY_BOT_TOKEN = "bot_token"
         private val KEY_MODE = stringPreferencesKey("mode")

@@ -2,10 +2,15 @@ package com.botcontrol.admin.service
 
 import android.content.Context
 import com.botcontrol.admin.BotControlApp
+import com.botcontrol.admin.data.Anim
 import com.botcontrol.admin.data.BotJson
+import com.botcontrol.admin.data.BotMatcher
 import com.botcontrol.admin.data.InlineBtn
 import com.botcontrol.admin.data.LocalBotStore
+import com.botcontrol.admin.data.MessageCtx
 import com.botcontrol.admin.data.ReplyPack
+import com.botcontrol.admin.data.RuleOptions
+import com.botcontrol.admin.data.ShuffleBag
 import com.botcontrol.admin.data.withIds
 import com.botcontrol.admin.llm.BotScript
 import com.botcontrol.admin.llm.ChatMemory
@@ -15,17 +20,28 @@ import com.botcontrol.admin.llm.DialogPrompt
 /** Результат «размышлений» бота над сообщением. */
 data class BotDecision(
     val source: String,   // правило / скрипт / набор / ИИ / уточняющий вопрос / запасной ответ / кулдаун
-    val reply: String,    // текст ответа (пусто = молчать)
+    val reply: String,    // текст ответа или подпись (пусто = молчать)
     val menu: List<InlineBtn> = emptyList(),
     /** Анимация правкой сообщения (правило с действием «Анимация»). */
     val anim: com.botcontrol.admin.data.AnimSpec? = null,
     /** Кубик Telegram (sendDice): 🎲 🎯 🏀 ⚽ 🎳 🎰. */
     val dice: String = "",
+    /** Опции доставки (parseMode, link preview, silent, protectContent, replyTo…). */
+    val options: RuleOptions = RuleOptions(),
+    val replyToMessageId: Int? = null,
+    /** Для actionType == "media" (U-4): тип (sticker/animation/document/photo/video/voice/audio) и file_id/URL. */
+    val mediaType: String = "",
+    val mediaRef: String = "",
+    /** Для actionType == "poll": вопрос и варианты. */
+    val pollQuestion: String = "",
+    val pollOptions: List<String> = emptyList(),
+    val pollAnonymous: Boolean = true,
+    val pollMultiple: Boolean = false,
 )
 
 /**
  * Единый «мозг» бота. Порядок:
- *  1) правила (текст / скрипт JS / набор — всегда КОД, без ИИ);
+ *  1) правила (текст / скрипт JS / набор / анимация / кубик / медиа / опрос — всегда КОД, без ИИ);
  *  2) сценарий ИИ — только явно: команда /chat (+ вопрос) или правило с
  *     действием «ИИ»; ИИ по умолчанию выключен и никогда не отвечает
  *     «на всё» — функции бота выполняются исполнением кода;
@@ -68,16 +84,19 @@ object BotBrain {
     fun parseMenu(json: String): List<InlineBtn> =
         runCatching { BotJson.menu(json) }.getOrDefault(emptyList()).withIds()
 
-    fun randomFrom(packs: List<ReplyPack>, packId: String): String =
-        packs.firstOrNull { it.id == packId }?.items?.randomOrNull()
-            ?: packs.firstOrNull { it.name == packId }?.items?.randomOrNull()
+    fun randomFrom(packs: List<ReplyPack>, packId: String, botId: Long = 0L): String {
+        val pack = packs.firstOrNull { it.id == packId }
+            ?: packs.firstOrNull { it.name == packId }
             ?: packs.firstOrNull { it.id.contains(packId) || packId.contains(it.id, ignoreCase = true) }
-                ?.items?.randomOrNull()
-            ?: packs.firstOrNull { pack ->
-                pack.items.isNotEmpty() && packId.isNotBlank() &&
-                    (pack.name.contains(packId, ignoreCase = true))
-            }?.items?.randomOrNull()
-            ?: "Набор пуст — добавь ответы в «🎲 Наборы ответов»"
+            ?: packs.firstOrNull { p ->
+                p.items.isNotEmpty() && packId.isNotBlank() && p.name.contains(packId, ignoreCase = true)
+            }
+        if (pack == null || pack.items.isEmpty()) {
+            return "Набор пуст — добавь ответы в «🎲 Наборы ответов»"
+        }
+        return if (pack.shuffleBag) ShuffleBag.next(botId, pack.id, pack.items)
+        else pack.items.random()
+    }
 
     suspend fun decide(
         context: Context,
@@ -89,83 +108,131 @@ object BotBrain {
         respectCooldown: Boolean = true,
         onLlmStart: (suspend () -> Unit)? = null,
         trace: ((String) -> Unit)? = null,
+        ctx: MessageCtx? = null,
     ): BotDecision {
         val app = context.applicationContext as BotControlApp
         val botName = LocalBotService.states.value[botId]?.botUsername.orEmpty()
+        val msgCtx = ctx ?: MessageCtx(chatId = chatId, firstName = firstName, text = text)
 
         // 1) декларативные правила
         val rules = app.repository.botRules(botId).filter { it.enabled }
         trace?.invoke("Проверяю правила (${rules.size})…")
         val packs = store.packs()
         for (rule in rules) {
-            val matched = when (rule.type) {
-                "command" -> {
-                    val first = text.split(Regex("\\s+")).firstOrNull().orEmpty()
-                    first.substringBefore("@").equals(
-                        if (rule.pattern.startsWith("/")) rule.pattern else "/${rule.pattern}",
-                        ignoreCase = true,
-                    )
-                }
-                "button" -> text.equals(rule.pattern, ignoreCase = true)
-                else -> text.contains(rule.pattern, ignoreCase = true) && rule.pattern.isNotBlank()
-            }
+            val opts = BotJson.ruleOptions(rule.options)
+            val matched = BotMatcher.matchesRule(rule.type, rule.pattern, text, opts.wholeWord)
             if (!matched) continue
+            val replyToId = if (opts.replyTo && msgCtx.messageId > 0) msgCtx.messageId else null
             trace?.invoke("✓ Сработало правило «${rule.pattern}» (тип: ${rule.type})")
             return when (rule.actionType) {
                 "llm" -> {
                     trace?.invoke("Действие правила: отвечает ИИ")
-                    llmReply(context, store, botId, chatId, firstName, text, onLlmStart, trace)
+                    val q = if (rule.type == "command") {
+                        BotMatcher.extractCommandArgsRaw(text).ifBlank { text }
+                    } else text
+                    llmReply(context, store, botId, chatId, firstName, q, onLlmStart, trace)
+                        .copy(options = opts, replyToMessageId = replyToId)
                 }
                 "script" -> {
                     trace?.invoke("Действие правила: скрипт JS")
-                    BotScript.run(rule.script, firstName, text, chatId).fold(
+                    BotScript.run(rule.script, firstName, text, chatId, msgCtx).fold(
                         onSuccess = {
                             trace?.invoke("Скрипт выполнен")
-                            BotDecision("скрипт «${rule.pattern}»", it.ifBlank { "…" },
-                                parseMenu(rule.menu))
+                            BotDecision(
+                                source = "скрипт «${rule.pattern}»",
+                                reply = it.ifBlank { "…" },
+                                menu = parseMenu(rule.menu),
+                                options = opts,
+                                replyToMessageId = replyToId,
+                            )
                         },
                         onFailure = {
                             trace?.invoke("Ошибка скрипта: ${it.message?.take(100)}")
-                            BotDecision("скрипт «${rule.pattern}» (ошибка)",
-                                "Ошибка скрипта: ${it.message?.take(140)}", parseMenu(rule.menu))
+                            BotDecision(
+                                source = "скрипт «${rule.pattern}» (ошибка)",
+                                reply = "Ошибка скрипта: ${it.message?.take(140)}",
+                                menu = parseMenu(rule.menu),
+                                options = opts,
+                                replyToMessageId = replyToId,
+                            )
                         },
                     )
                 }
                 "anim" -> {
-                    val spec = com.botcontrol.admin.data.Anim.decode(rule.script)
-                    trace?.invoke("Действие правила: анимация «${com.botcontrol.admin.data.Anim.preset(spec.preset).title}»")
+                    val spec = Anim.decode(rule.script)
+                    trace?.invoke("Действие правила: анимация «${Anim.preset(spec.preset).title}»")
                     val items = packs.firstOrNull { it.id == spec.packId }?.items.orEmpty()
-                    val final = com.botcontrol.admin.data.Anim.final(spec, firstName, items)
-                    BotDecision("анимация «${rule.pattern}»",
-                        final.ifBlank { com.botcontrol.admin.data.Anim.frames(spec, firstName).lastOrNull().orEmpty() }
-                            .ifBlank { "🎞" },
-                        parseMenu(rule.menu), anim = spec)
+                    val final = Anim.final(spec, firstName, items)
+                    BotDecision(
+                        source = "анимация «${rule.pattern}»",
+                        reply = final.ifBlank { Anim.frames(spec, firstName).lastOrNull().orEmpty() }.ifBlank { "🎞" },
+                        menu = parseMenu(rule.menu),
+                        anim = spec,
+                        options = opts,
+                        replyToMessageId = replyToId,
+                    )
                 }
                 "dice" -> {
                     val emoji = rule.responseText.trim().ifBlank { "🎲" }
                     trace?.invoke("Действие правила: кубик Telegram $emoji")
-                    BotDecision("кубик «${rule.pattern}»", emoji, parseMenu(rule.menu), dice = emoji)
+                    BotDecision("кубик «${rule.pattern}»", emoji, parseMenu(rule.menu), dice = emoji,
+                        options = opts, replyToMessageId = replyToId)
+                }
+                "media" -> {
+                    val mType = opts.mediaType.ifBlank { "photo" }
+                    val mRef = opts.mediaRef.ifBlank { rule.script.trim() }
+                    val caption = BotMatcher.expandPlaceholders(rule.responseText, msgCtx, botName)
+                    trace?.invoke("Действие правила: медиа ($mType)")
+                    BotDecision(
+                        source = "медиа ($mType) «${rule.pattern}»",
+                        reply = caption,
+                        menu = parseMenu(rule.menu),
+                        options = opts,
+                        replyToMessageId = replyToId,
+                        mediaType = mType,
+                        mediaRef = mRef,
+                    )
+                }
+                "poll" -> {
+                    val q = BotMatcher.expandPlaceholders(
+                        opts.pollQuestion.ifBlank { rule.responseText }, msgCtx, botName)
+                    trace?.invoke("Действие правила: опрос «${q.take(40)}»")
+                    BotDecision(
+                        source = "опрос «${rule.pattern}»",
+                        reply = q,
+                        menu = parseMenu(rule.menu),
+                        options = opts,
+                        replyToMessageId = replyToId,
+                        pollQuestion = q,
+                        pollOptions = opts.pollOptions,
+                        pollAnonymous = opts.pollAnonymous,
+                        pollMultiple = opts.pollMultiple,
+                    )
                 }
                 "pack" -> {
-                    val reply = randomFrom(packs, rule.packId)
+                    val raw = randomFrom(packs, rule.packId, botId)
+                    val reply = BotMatcher.expandPlaceholders(raw, msgCtx, botName)
                     trace?.invoke("Действие правила: случайное из набора")
-                    BotDecision("набор «${packs.firstOrNull { it.id == rule.packId }?.name ?: rule.packId}»",
-                        reply, parseMenu(rule.menu))
+                    BotDecision(
+                        source = "набор «${packs.firstOrNull { it.id == rule.packId }?.name ?: rule.packId}»",
+                        reply = reply,
+                        menu = parseMenu(rule.menu),
+                        options = opts,
+                        replyToMessageId = replyToId,
+                    )
                 }
-                else -> BotDecision("правило «${rule.pattern}»",
-                    rule.responseText
-                        .replace("{user}", firstName)
-                        .replace("{text}", text)
-                        .replace("{bot}", if (botName.isNotBlank()) "@$botName" else ""),
-                    parseMenu(rule.menu))
+                else -> BotDecision(
+                    source = "правило «${rule.pattern}»",
+                    reply = BotMatcher.expandPlaceholders(rule.responseText, msgCtx, botName),
+                    menu = parseMenu(rule.menu),
+                    options = opts,
+                    replyToMessageId = replyToId,
+                )
             }
         }
         trace?.invoke("Ни одно правило не подошло")
 
         // 1.1) Нажата кнопка клавиатуры бота, а правила для неё нет.
-        //     Раньше на такое приходил случайный уточняющий вопрос —
-        //     выглядело как «заготовленный ответ». Теперь говорим прямо,
-        //     что у кнопки не задано действие, и куда нажать.
         val kbHit = store.keyboard(botId)
             .firstOrNull { it.trim().equals(text.trim(), ignoreCase = true) }
         if (kbHit != null) {
@@ -179,7 +246,6 @@ object BotBrain {
         }
 
         // 2) Явная команда «ИИ-сценарий»: /chat (или /ai) + вопрос.
-    //    ИИ — это ФИЧА, отдельный сценарий, а не ответ «на всё».
         val aiCommand = Regex("^/(chat|ai)(@\\w+)?\\s*(.*)$", RegexOption.IGNORE_CASE).find(text)
         if (aiCommand != null) {
             val question = aiCommand.groupValues[3].trim()
@@ -200,7 +266,7 @@ object BotBrain {
             }
         }
 
-        // 3) Антифлуд на «незнакомых» сообщениях (как ANSWER_COOLDOWN в оригинале)
+        // 3) Антифлуд на «незнакомых» сообщениях
         val cd = store.cooldownSec(botId).toLong()
         if (respectCooldown && cd > 0) {
             val now = System.currentTimeMillis() / 1000
@@ -213,8 +279,26 @@ object BotBrain {
         }
 
         // 4) Кодовый запасной ответ (уточняющий вопрос или default).
-        //    ИИ здесь НЕ вызывается: он — только в сценариях (шаг 2, правило «ИИ»).
         return fallback(store, botId)
+    }
+
+    /** Вызов локальной ИИ по нажатию inline-кнопки с action == "llm". */
+    suspend fun askLlmFromButton(
+        context: Context,
+        store: LocalBotStore,
+        botId: Long,
+        chatId: Long,
+        firstName: String,
+        promptText: String,
+        onLlmStart: (suspend () -> Unit)? = null,
+    ): BotDecision {
+        if (!store.llmEnabled(botId)) {
+            return BotDecision("ИИ (выключен)", "🤖 ИИ выключен в настройках бота.")
+        }
+        if (store.aiModel(botId).isBlank()) {
+            return BotDecision("ИИ (нет модели)", "🤖 Модель ИИ не выбрана в «ИИ → Модели ИИ».")
+        }
+        return llmReply(context, store, botId, chatId, firstName, promptText, onLlmStart, null)
     }
 
     private suspend fun llmReply(
@@ -255,10 +339,6 @@ object BotBrain {
             )
     }
 
-    /**
-     * Запасной ответ СВОЕГО бота. Раньше читался без botId → «активный бот»
-     * из интерфейса: уточняющие вопросы одного бота отвечали во всех.
-     */
     private suspend fun fallback(store: LocalBotStore, botId: Long): BotDecision {
         val clarify = if (store.clarifyEnabled(botId)) {
             store.clarifyQuestions(botId).randomOrNull().orEmpty()

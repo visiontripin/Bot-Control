@@ -14,7 +14,11 @@ import androidx.core.app.ServiceCompat
 import com.botcontrol.admin.BotControlApp
 import com.botcontrol.admin.R
 import com.botcontrol.admin.data.BotJson
+import com.botcontrol.admin.data.BotMatcher
 import com.botcontrol.admin.data.InlineBtn
+import com.botcontrol.admin.data.MessageCtx
+import com.botcontrol.admin.data.ScheduleJitter
+import com.botcontrol.admin.data.findButtonRecursive
 import com.botcontrol.admin.data.withIds
 import com.botcontrol.admin.data.LocalBotStore
 import com.botcontrol.admin.data.telegram.TelegramApi
@@ -70,6 +74,7 @@ class LocalBotService : Service() {
     private var scope: CoroutineScope = newScope()
     private val botJobs = ConcurrentHashMap<Long, Job>()
     private val activeTokens = ConcurrentHashMap<Long, Pair<Job, String>>()
+    private val inlineMenuStacks = ConcurrentHashMap<String, MutableList<Pair<String?, List<InlineBtn>>>>()
     private val startMutex = Mutex()
 
 
@@ -254,7 +259,7 @@ class LocalBotService : Service() {
         if (menuCommands.isNotEmpty()) {
             val menuSig = LocalBotStore.computeMenuSignature(TelegramRateLimit.tokenKey(token), menuCommands)
             if (store.menuSignature(botId) != menuSig) {
-                api.setMyCommands(menuCommands.map { it.command to it.description })
+                api.setMyCommandsScoped(menuCommands)
                     .onSuccess {
                         store.setMenuSignature(botId, menuSig)
                         BotLog.log(botId, "📜 Главное меню применено (${menuCommands.size} команд)")
@@ -468,6 +473,19 @@ class LocalBotService : Service() {
 
         // Решение принимает общий «мозг» (тот же, что во вкладке имитации).
         BotLog.log(botId, "📩 Сообщение: '${text.take(80)}'")
+        val msgCtx = MessageCtx(
+            chatId = msg.chatId,
+            userId = msg.userId,
+            firstName = msg.firstName,
+            username = msg.username,
+            chatType = msg.chatType,
+            text = text,
+            kind = msg.kind,
+            fileId = msg.fileId.ifBlank { msg.photoId },
+            messageId = msg.messageId,
+            threadId = msg.messageThreadId,
+            replyToText = msg.replyToText,
+        )
         val decision = BotBrain.decide(
             context = this,
             store = store,
@@ -478,8 +496,11 @@ class LocalBotService : Service() {
             respectCooldown = true,
             onLlmStart = { api.sendChatAction(msg.chatId) },
             trace = { BotLog.log(botId, "   • $it") },
+            ctx = msgCtx,
         )
         BotLog.log(botId, "💬 Источник: ${decision.source}; ответ: '${decision.reply.take(60)}'")
+        val opts = decision.options
+        val pm = opts.parseMode.ifBlank { null }
         decision.anim?.let { spec ->
             val items = store.packs().firstOrNull { it.id == spec.packId }?.items.orEmpty()
             AnimPlayer.play(botScope, api, botId, msg.chatId, spec, msg.firstName, items, decision.menu)
@@ -490,11 +511,57 @@ class LocalBotService : Service() {
                 .onFailure { BotLog.log(botId, "❌ Кубик не отправлен: ${it.message?.take(120)}") }
             return
         }
+        if (decision.mediaType.isNotBlank() && decision.mediaRef.isNotBlank()) {
+            withTyping(api, store, botId, msg.chatId)
+            api.sendMediaByType(
+                chatId = msg.chatId,
+                mediaType = decision.mediaType,
+                mediaRef = decision.mediaRef,
+                caption = decision.reply,
+                parseMode = pm,
+                silent = opts.silent,
+                protectContent = opts.protectContent,
+                replyToMessageId = decision.replyToMessageId,
+                messageThreadId = msg.messageThreadId,
+                inlineMenu = decision.menu,
+            ).onFailure {
+                BotLog.log(botId, "❌ Медиа (${decision.mediaType}) не отправлено: ${it.message?.take(140)}")
+            }
+            return
+        }
+        if (decision.pollQuestion.isNotBlank() && decision.pollOptions.size >= 2) {
+            withTyping(api, store, botId, msg.chatId)
+            api.sendPoll(
+                chatId = msg.chatId,
+                question = decision.pollQuestion,
+                options = decision.pollOptions,
+                isAnonymous = decision.pollAnonymous,
+                allowsMultipleAnswers = decision.pollMultiple,
+                silent = opts.silent,
+                protectContent = opts.protectContent,
+                replyToMessageId = decision.replyToMessageId,
+                messageThreadId = msg.messageThreadId,
+                inlineMenu = decision.menu,
+            ).onFailure {
+                BotLog.log(botId, "❌ Опрос не отправлен: ${it.message?.take(140)}")
+            }
+            return
+        }
         if (decision.reply.isBlank()) return
         // Для ответа ИИ «печатает…» уже показано во время генерации — не дублируем паузу.
         if (decision.source != "ИИ") withTyping(api, store, botId, msg.chatId)
-        api.sendMessage(msg.chatId, decision.reply, keyboard, decision.menu)
-            .onFailure { BotLog.log(botId, "❌ Не отправлено (${decision.source}): ${it.message ?: "?"}") }
+        api.sendMessage(
+            chatId = msg.chatId,
+            text = decision.reply,
+            keyboard = keyboard,
+            inlineMenu = decision.menu,
+            parseMode = pm,
+            disablePreview = opts.disablePreview,
+            silent = opts.silent,
+            protectContent = opts.protectContent,
+            replyToMessageId = decision.replyToMessageId,
+            messageThreadId = msg.messageThreadId,
+        ).onFailure { BotLog.log(botId, "❌ Не отправлено (${decision.source}): ${it.message ?: "?"}") }
     }
 
     /** «Печатает…» + пауза-имитация набора (как typing_plugin, сек из настроек бота). */
@@ -531,7 +598,7 @@ class LocalBotService : Service() {
             return
         }
 
-        // Ищем кнопку ТОЛЬКО среди меню этого бота (правила + события).
+        // Ищем кнопку ТОЛЬКО среди меню этого бота (правила + события, включая вложенные подменю I-4).
         val hit = findButton(app, store, botId, cb.data)
         val btn = hit?.first
         // Всегда отвечаем на callback, чтобы в Telegram не висели «часики».
@@ -584,24 +651,128 @@ class LocalBotService : Service() {
         }
 
         val menu = hit?.second ?: listOf(btn)
+        val botName = states.value[botId]?.botUsername.orEmpty()
+        val cbCtx = MessageCtx(
+            chatId = cb.chatId,
+            userId = cb.chatId,
+            firstName = cb.firstName,
+            text = btn.label,
+            messageId = cb.messageId,
+        )
+        val pm = btn.parseMode.ifBlank { null }
         when (btn.action) {
+            "submenu" -> {
+                val sub = if (btn.submenu.isNotEmpty()) btn.submenu.withIds()
+                else findTargetMenu(app, store, botId, btn.menuTarget)
+                if (sub.isEmpty()) {
+                    api.sendMessage(cb.chatId, BotMatcher.expandPlaceholders(btn.text.ifBlank { "Подменю пусто." }, cbCtx, botName), parseMode = pm)
+                    return
+                }
+                val stackKey = "$botId:${cb.chatId}:${cb.messageId}"
+                if (inlineMenuStacks.size > 500) inlineMenuStacks.clear()
+                val stack = inlineMenuStacks.getOrPut(stackKey) { mutableListOf() }
+                synchronized(stack) {
+                    if (stack.size >= 16) stack.removeAt(0)
+                    stack.add(null to menu)
+                }
+                val hasBack = sub.any { it.action == "back" }
+                val finalSub = if (!hasBack && sub.size < 12) {
+                    sub + InlineBtn(id = "back_${btn.id.take(28)}", label = "⬅️ Назад", action = "back")
+                } else sub
+                if (btn.text.isNotBlank()) {
+                    api.editMessageText(
+                        cb.chatId, cb.messageId,
+                        BotMatcher.expandPlaceholders(btn.text, cbCtx, botName),
+                        finalSub, parseMode = pm,
+                    )
+                } else {
+                    api.editMessageReplyMarkup(cb.chatId, cb.messageId, finalSub)
+                }
+            }
+            "back" -> {
+                val stackKey = "$botId:${cb.chatId}:${cb.messageId}"
+                val stack = inlineMenuStacks[stackKey]
+                val prev = stack?.let {
+                    synchronized(it) { if (it.isNotEmpty()) it.removeAt(it.lastIndex) else null }
+                }
+                if (prev != null) {
+                    val (prevText, prevMenu) = prev
+                    val textToSet = btn.text.ifBlank { prevText.orEmpty() }
+                    if (textToSet.isNotBlank()) {
+                        api.editMessageText(
+                            cb.chatId, cb.messageId,
+                            BotMatcher.expandPlaceholders(textToSet, cbCtx, botName),
+                            prevMenu, parseMode = pm,
+                        )
+                    } else {
+                        api.editMessageReplyMarkup(cb.chatId, cb.messageId, prevMenu)
+                    }
+                } else {
+                    val parentMenu = findParentMenuOf(app, store, botId, cb.data)
+                    if (parentMenu != null) {
+                        if (btn.text.isNotBlank()) {
+                            api.editMessageText(
+                                cb.chatId, cb.messageId,
+                                BotMatcher.expandPlaceholders(btn.text, cbCtx, botName),
+                                parentMenu, parseMode = pm,
+                            )
+                        } else {
+                            api.editMessageReplyMarkup(cb.chatId, cb.messageId, parentMenu)
+                        }
+                    } else {
+                        api.answerCallbackQuery(cb.callbackId, btn.toast.ifBlank { "Это верхний уровень меню" })
+                    }
+                }
+            }
             "pack" -> {
-                val reply = BotBrain.randomFrom(store.packs(), btn.packId)
+                val raw = BotBrain.randomFrom(store.packs(), btn.packId, botId)
+                val reply = BotMatcher.expandPlaceholders(raw, cbCtx, botName)
                 withTyping(api, store, botId, cb.chatId)
-                // В оригинале сарказм присылался НОВЫМ сообщением,
-                // но если в коде стоит правка — правим сообщение под кнопкой.
-                if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, reply, menu)
-                else api.sendMessage(cb.chatId, reply)
+                if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, reply, menu, parseMode = pm)
+                else api.sendMessage(cb.chatId, reply, parseMode = pm)
             }
             "script" -> {
-                BotScript.run(btn.script, cb.firstName, btn.label, cb.chatId)
+                BotScript.run(btn.script, cb.firstName, btn.label, cb.chatId, cbCtx)
                     .onSuccess { reply ->
+                        val textOut = reply.ifBlank { "…" }
                         withTyping(api, store, botId, cb.chatId)
-                        api.sendMessage(cb.chatId, reply.ifBlank { "…" })
+                        if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, textOut, menu, parseMode = pm)
+                        else api.sendMessage(cb.chatId, textOut, parseMode = pm)
                     }
                     .onFailure { e ->
                         api.sendMessage(cb.chatId, "Ошибка скрипта: ${e.message?.take(140)}")
                     }
+            }
+            "llm" -> {
+                val prompt = btn.text.ifBlank { btn.label }
+                val decision = BotBrain.askLlmFromButton(
+                    context = this,
+                    store = store,
+                    botId = botId,
+                    chatId = cb.chatId,
+                    firstName = cb.firstName,
+                    promptText = prompt,
+                    onLlmStart = { api.sendChatAction(cb.chatId) },
+                )
+                val reply = decision.reply.ifBlank { "…" }
+                if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, reply, menu, parseMode = pm)
+                else api.sendMessage(cb.chatId, reply, parseMode = pm)
+            }
+            "media" -> {
+                val mType = btn.mediaType.ifBlank { "photo" }
+                val mRef = btn.mediaRef.ifBlank { btn.url }
+                if (mRef.isBlank()) {
+                    api.sendMessage(cb.chatId, "Не задан file_id или URL медиа для кнопки «${btn.label}».")
+                } else {
+                    withTyping(api, store, botId, cb.chatId)
+                    api.sendMediaByType(
+                        chatId = cb.chatId,
+                        mediaType = mType,
+                        mediaRef = mRef,
+                        caption = BotMatcher.expandPlaceholders(btn.text, cbCtx, botName),
+                        parseMode = pm,
+                    ).onFailure { BotLog.log(botId, "❌ Медиа кнопки не отправлено: ${it.message?.take(140)}") }
+                }
             }
             "reminders_on", "reminders_off" -> {
                 val on = btn.action == "reminders_on"
@@ -625,6 +796,7 @@ class LocalBotService : Service() {
                         if (on) "▶️ Напоминания включены." else "⏹ Напоминания выключены."
                     },
                     inlineMenu = menu,
+                    parseMode = pm,
                 )
             }
             "anim" -> {
@@ -640,24 +812,21 @@ class LocalBotService : Service() {
                 api.sendDice(cb.chatId, btn.text.trim().ifBlank { "🎲" })
                     .onFailure { BotLog.log(botId, "❌ Кубик не отправлен: ${it.message?.take(120)}") }
             }
-            "url" -> {
-                // Кнопка-ссылка: Telegram сам открывает url, боту делать
-                // нечего (всплывашка уже отправлена). Раньше сюда падало
-                // и присылали пустой текст «…».
+            "url", "web_app", "copy_text", "switch_inline" -> {
+                // Клиентские действия Telegram: открывает ссылку/Mini App, копирует текст или подставляет inline-запрос.
             }
             else -> {
-                val reply = btn.text.ifBlank { "…" }
+                val reply = BotMatcher.expandPlaceholders(btn.text.ifBlank { "…" }, cbCtx, botName)
                 withTyping(api, store, botId, cb.chatId)
-                if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, reply, menu)
-                else api.sendMessage(cb.chatId, reply)
+                if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, reply, menu, parseMode = pm)
+                else api.sendMessage(cb.chatId, reply, parseMode = pm)
             }
         }
     }
 
     /**
-     * Кнопка по её callback_data: (сама кнопка, всё меню сообщения).
-     * Ищем только среди меню ЭТОГО бота — иначе кнопка одного бота
-     * срабатывала бы у другого и чужие кнопки «не работали».
+     * Кнопка по её callback_data: (сама кнопка, всё меню текущего уровня).
+     * Ищем рекурсивно (поддерживая вложенные подменю I-4) и только среди меню ЭТОГО бота.
      */
     private suspend fun findButton(
         app: BotControlApp,
@@ -667,11 +836,62 @@ class LocalBotService : Service() {
     ): Pair<InlineBtn, List<InlineBtn>>? {
         for (rule in app.repository.botRules(botId)) {
             val menu = BotBrain.parseMenu(rule.menu)
-            menu.firstOrNull { it.id == data }?.let { return it to menu }
+            menu.findButtonRecursive(data)?.let { return it }
         }
         for (event in store.schedule(botId)) {
             val menu = event.menu.withIds()
-            menu.firstOrNull { it.id == data }?.let { return it to menu }
+            menu.findButtonRecursive(data)?.let { return it }
+        }
+        return null
+    }
+
+    /** Найти именованное меню правила по menuTarget (для action == "submenu"). */
+    private suspend fun findTargetMenu(
+        app: BotControlApp,
+        store: LocalBotStore,
+        botId: Long,
+        target: String,
+    ): List<InlineBtn> {
+        val clean = target.trim()
+        if (clean.isBlank()) return emptyList()
+        for (rule in app.repository.botRules(botId)) {
+            if (rule.pattern.equals(clean, ignoreCase = true) ||
+                rule.pattern.removePrefix("/").equals(clean.removePrefix("/"), ignoreCase = true)
+            ) {
+                val m = BotBrain.parseMenu(rule.menu)
+                if (m.isNotEmpty()) return m
+            }
+        }
+        for (event in store.schedule(botId)) {
+            if (event.id == clean && event.menu.isNotEmpty()) return event.menu.withIds()
+        }
+        return emptyList()
+    }
+
+    /** Fallback для «⬅️ Назад», если стек в памяти сброшен: найти родительский уровень для id подменю. */
+    private suspend fun findParentMenuOf(
+        app: BotControlApp,
+        store: LocalBotStore,
+        botId: Long,
+        backData: String,
+    ): List<InlineBtn>? {
+        val targetId = backData.removePrefix("back_")
+        fun searchParent(level: List<InlineBtn>): List<InlineBtn>? {
+            for (b in level) {
+                if (b.submenu.any { it.id == backData || it.id == targetId } ||
+                    (b.id == targetId && b.action == "submenu")
+                ) {
+                    return level
+                }
+                searchParent(b.submenu)?.let { return it }
+            }
+            return null
+        }
+        for (rule in app.repository.botRules(botId)) {
+            searchParent(BotBrain.parseMenu(rule.menu))?.let { return it }
+        }
+        for (event in store.schedule(botId)) {
+            searchParent(event.menu.withIds())?.let { return it }
         }
         return null
     }
@@ -699,28 +919,32 @@ class LocalBotService : Service() {
                 val rawDow = cal.get(Calendar.DAY_OF_WEEK)
                 val dow = if (rawDow == Calendar.SUNDAY) 7 else rawDow - 1
 
+                val year = cal.get(Calendar.YEAR)
+                val doy = cal.get(Calendar.DAY_OF_YEAR)
                 val nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
                 val events = store.schedule(botId)
                     .filter { it.enabled && it.days.contains(dow) }
-                    .sortedBy { it.hour * 60 + it.minute }
+                    .sortedBy { ScheduleJitter.effectiveMinute(it.hour, it.minute, it.id, year, doy, it.jitterMin) }
                 for (e in events) {
                     val key = "${e.id}@$today"
                     if (key in sentToday) continue
-                    val ageMin = nowMin - (e.hour * 60 + e.minute)
+                    val targetMin = ScheduleJitter.effectiveMinute(e.hour, e.minute, e.id, year, doy, e.jitterMin)
+                    val ageMin = nowMin - targetMin
                     if (ageMin < 0) continue          // ещё впереди
                     if (ageMin > CATCH_UP_MINUTES) {  // слишком старое — тихо пропускаем
                         sentToday.add(key)
                         continue
                     }
                     var markDone = true
-                    val postText = e.pickVariant(cal.get(Calendar.DAY_OF_YEAR))
+                    val postText = e.pickVariant(doy)
+                    val pm = e.parseMode.ifBlank { null }
                     if (e.toChannel) {
                         // Пост в канал публикаций (например, дайджест 10:20/20:40).
                         val channel = store.channelId(botId)
                         if (channel.isBlank()) {
                             BotLog.log(botId, "⚠️ Событие ${e.timeLabel()} в канал, но канал не задан")
                         } else {
-                            val res = api.sendTo(channel, postText, e.menu.withIds())
+                            val res = api.sendTo(channel, postText, e.menu.withIds(), parseMode = pm, messageThreadId = e.threadId)
                             if (res.isSuccess) {
                                 BotLog.log(botId, "📢 Пост в канал $channel: ${postText.take(60)}")
                             } else {
@@ -738,7 +962,7 @@ class LocalBotService : Service() {
                         }
                     } else {
                         withTyping(api, store, botId, chatId)
-                        val res = api.sendMessage(chatId, postText, inlineMenu = e.menu.withIds())
+                        val res = api.sendMessage(chatId, postText, inlineMenu = e.menu.withIds(), parseMode = pm, messageThreadId = e.threadId)
                         if (res.isSuccess) {
                             BotLog.log(botId, "⏰ Напоминание ${e.timeLabel()}: ${postText.take(60)}")
                         } else {

@@ -274,7 +274,8 @@ private suspend fun applyParsed(
         val withPack = if (b.packId.startsWith("imp_") || b.packId.startsWith("lib:")) {
             b.copy(packId = packId(b.packId))
         } else b
-        if (withPack.action == "anim") withPack.copy(script = animFixed(withPack.script)) else withPack
+        val withAnim = if (withPack.action == "anim") withPack.copy(script = animFixed(withPack.script)) else withPack
+        if (withAnim.submenu.isNotEmpty()) withAnim.copy(submenu = buttonsFixed(withAnim.submenu)) else withAnim
     }
 
     // ---------- характер и параметры ИИ ----------
@@ -313,20 +314,27 @@ private suspend fun applyParsed(
             "script" -> "script"
             "anim" -> "anim"
             "dice" -> "dice"
+            "media" -> "media"
+            "poll" -> "poll"
             else -> "text"
         }
         val ruleScript = if (action == "anim") animFixed(imp.script) else imp.script
         val ruleText = when (action) {
-            "text" -> imp.text
+            "text", "media" -> imp.text
+            "poll" -> imp.options.pollQuestion.ifBlank { imp.text }
             "dice" -> imp.text.ifBlank { "🎲" } // эмодзи кубика
             else -> ""
         }
         val packForRule = if (action == "pack") packId(imp.packId) else ""
-        if (action == "text" && imp.text.isBlank()) {
+        if ((action == "text" && imp.text.isBlank()) ||
+            (action == "media" && imp.options.mediaRef.isBlank()) ||
+            (action == "poll" && imp.options.pollOptions.size < 2)
+        ) {
             rulesSkipped++
             skippedPatterns.add(imp.pattern.ifBlank { imp.type })
-            continue // пустой текст — фиксируем пропуск в сводке
+            continue // пустой текст/медиа/опрос — фиксируем пропуск в сводке
         }
+        val optsJson = BotJson.save(imp.options)
         // Самоисцеление: ищем уже сохранённое правило ПО ПАТТЕРНУ, не по типу.
         // Старые версии могли сохранить то же правило иначе (другой тип,
         // другой формат), и тогда новый импорт создавал дубль, а старые
@@ -345,6 +353,7 @@ private suspend fun applyParsed(
                 packId = packForRule,
                 script = ruleScript,
                 menu = BotJson.save(menu.withIds()),
+                options = optsJson,
             )
         } else {
             BotRuleEntity(
@@ -356,6 +365,7 @@ private suspend fun applyParsed(
                 packId = packForRule,
                 script = ruleScript,
                 menu = BotJson.save(menu.withIds()),
+                options = optsJson,
             )
         }
         repository.saveBotRule(entity)

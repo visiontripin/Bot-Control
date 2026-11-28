@@ -98,6 +98,7 @@ object SettingsExporter {
             if (b.action == "anim" && b.script.isNotBlank()) {
                 Anim.decode(b.script).packId.takeIf { it.isNotBlank() }?.let(out::add)
             }
+            b.submenu.forEach(::btn)
         }
         rules.forEach { r ->
             if (r.packId.isNotBlank()) out.add(r.packId)
@@ -110,17 +111,51 @@ object SettingsExporter {
         return out
     }
 
+    private fun btnKey(b: InlineBtn): String =
+        b.label + "|" + b.action + "|" + b.packId + "|" + b.text + "|" + b.url + "|" + b.row + "|" +
+            b.mediaType + "|" + b.mediaRef + "|" + b.parseMode + "|" +
+            b.submenu.joinToString(",") { btnKey(it) }
+
     private fun collectMenus(
         rules: List<BotRuleEntity>,
         events: List<ScheduleEvent>,
-    ): List<Pair<String, List<InlineBtn>>> {
+    ): Pair<List<Pair<String, List<InlineBtn>>>, Map<String, String>> {
         val out = ArrayList<Pair<String, List<InlineBtn>>>()
         val seen = HashSet<String>()
+        val usedNames = HashSet<String>()
+        val submenuBySig = HashMap<String, String>()
+        fun uniqueName(base: String): String {
+            var name = base
+            var i = 2
+            while (!usedNames.add(name)) name = "${base}_$i".also { i++ }
+            return name
+        }
+        fun walkSubs(menu: List<InlineBtn>) {
+            menu.forEach { b ->
+                if (b.submenu.isNotEmpty()) {
+                    val subSig = b.submenu.joinToString("|") { btnKey(it) }
+                    val existingName = out.firstOrNull { (_, m) ->
+                        m.joinToString("|") { btnKey(it) } == subSig
+                    }?.first
+                    val fnName = existingName ?: uniqueName("kb_sub_${slug(b.id.ifBlank { b.label })}")
+                    submenuBySig[subSig] = fnName
+                    if (existingName == null && seen.add(subSig)) {
+                        out.add(fnName to b.submenu)
+                    }
+                    walkSubs(b.submenu)
+                }
+            }
+        }
         fun add(name: String, menu: List<InlineBtn>) {
             if (menu.isEmpty()) return
-            val key = menu.joinToString("|") { it.label + it.action + it.packId + it.text + it.url + it.row }
-            if (!seen.add(key)) return
-            out.add(name to menu)
+            val key = menu.joinToString("|") { btnKey(it) }
+            if (!seen.add(key)) {
+                walkSubs(menu)
+                return
+            }
+            val fn = uniqueName(name)
+            out.add(fn to menu)
+            walkSubs(menu)
         }
         rules.forEach { r ->
             val menu = BotJson.menu(r.menu)
@@ -136,7 +171,7 @@ object SettingsExporter {
                 add("kb_${e.hour}_${e.minute}", e.menu)
             }
         }
-        return out
+        return out to submenuBySig
     }
 
     /** Тело функции меню: по ряду на каждую строку markup.row(…). */
@@ -146,8 +181,18 @@ object SettingsExporter {
         lines.add("    markup = InlineKeyboardMarkup()")
         rows.forEach { row ->
             val btns = row.joinToString(", ") { b ->
-                if (b.url.isNotBlank()) "InlineKeyboardButton(${py(b.label)}, url=${py(b.url)})"
-                else "InlineKeyboardButton(${py(b.label)}, callback_data=${py(b.id.ifBlank { b.label })})"
+                when {
+                    b.action == "web_app" && b.url.isNotBlank() ->
+                        "InlineKeyboardButton(${py(b.label)}, web_app=WebAppInfo(url=${py(b.url)}))"
+                    b.action == "copy_text" && b.text.isNotBlank() ->
+                        "InlineKeyboardButton(${py(b.label)}, copy_text=CopyTextButton(text=${py(b.text)}))"
+                    b.action == "switch_inline" ->
+                        "InlineKeyboardButton(${py(b.label)}, switch_inline_query_current_chat=${py(b.text)})"
+                    b.url.isNotBlank() ->
+                        "InlineKeyboardButton(${py(b.label)}, url=${py(b.url)})"
+                    else ->
+                        "InlineKeyboardButton(${py(b.label)}, callback_data=${py(b.id.ifBlank { b.label })})"
+                }
             }
             lines.add("    markup.row($btns)")
         }
@@ -164,6 +209,10 @@ object SettingsExporter {
         "button" -> listOf(
             "@bot.message_handler(func=lambda m: m.text == ${py(rule.pattern)})",
             "def btn_${slug(rule.pattern)}(msg):",
+        )
+        "regex" -> listOf(
+            "@bot.message_handler(regexp=${py(rule.pattern)})",
+            "def rx_${slug(rule.pattern)}(msg):",
         )
         else -> listOf(
             "@bot.message_handler(func=lambda m: ${py(rule.pattern)} in (m.text or \"\").lower())",
@@ -218,7 +267,7 @@ object SettingsExporter {
 
         val rules = repository.botRules(botId).filter { it.enabled }
         val events = store.schedule(botId).filter { it.enabled }
-        val menus = collectMenus(rules, events)
+        val (menus, submenuBySig) = collectMenus(rules, events)
         // Только наборы ЭТОГО бота: на которые ссылаются его правила/кнопки/
         // анимации/расписание или импортированные для него. Раньше в .py
         // попадала вся библиотека — тексты других ботов.
@@ -315,7 +364,7 @@ object SettingsExporter {
                 sb.appendLine()
             }
         }
-        val ctx = Ctx(menus, consts, animConstOf)
+        val ctx = Ctx(menus, consts, animConstOf, submenuBySig)
 
         // ---------- клавиатура чата ----------
         val keyboard = store.keyboard(botId)
@@ -436,10 +485,29 @@ object SettingsExporter {
         val menus: List<Pair<String, List<InlineBtn>>>,
         val consts: Map<String, String>,
         val animConstOf: Map<String, String>,
+        val submenuBySig: Map<String, String> = emptyMap(),
     )
 
     private fun packExpr(packId: String, ctx: Ctx): String =
         ctx.consts[packId]?.let { "random.choice($it)" } ?: py("(набор $packId не найден)")
+
+    private fun mediaFnOf(mediaType: String): String = when (mediaType.lowercase()) {
+        "sticker" -> "sticker"
+        "animation", "gif" -> "animation"
+        "document", "file" -> "document"
+        "video" -> "video"
+        "voice" -> "voice"
+        "audio" -> "audio"
+        else -> "photo"
+    }
+
+    private fun optArgs(opts: RuleOptions): String = buildString {
+        if (opts.parseMode.isNotBlank()) append(", parse_mode=${py(opts.parseMode)}")
+        if (opts.disablePreview) append(", disable_web_page_preview=True")
+        if (opts.silent) append(", disable_notification=True")
+        if (opts.protectContent) append(", protect_content=True")
+        if (opts.replyTo) append(", reply_to_message_id=msg.message_id")
+    }
 
     /**
      * @bot.callback_query_handler — по ветке на каждую кнопку с действием.
@@ -449,7 +517,9 @@ object SettingsExporter {
      */
     private fun emitCallbacks(sb: StringBuilder, menus: List<Pair<String, List<InlineBtn>>>, ctx: Ctx) {
         val seen = HashSet<String>()
-        val btns = menus.flatMap { it.second }.filter { !it.isUrl && it.action != "url" }
+        val clientActions = setOf("url", "web_app", "copy_text", "switch_inline", "back")
+        val btns = menus.flatMap { it.second }
+            .filter { !it.isUrl && it.action !in clientActions }
             .filter { seen.add(it.id.ifBlank { it.label }) }
         if (btns.isEmpty()) return
         sb.appendLine("reminders_running = False")
@@ -463,6 +533,7 @@ object SettingsExporter {
             val id = b.id.ifBlank { b.label }
             sb.appendLine("    ${if (i == 0) "if" else "elif"} call.data == ${py(id)}:")
             val mid = "call.message.message_id"
+            val pmArg = if (b.parseMode.isNotBlank()) ", parse_mode=${py(b.parseMode)}" else ""
             fun toast(t: String) { if (t.isNotBlank()) sb.appendLine("        bot.answer_callback_query(call.id, ${py(t)})") }
             when (b.action) {
                 "reminders_on", "reminders_off" -> {
@@ -473,16 +544,36 @@ object SettingsExporter {
                     sb.appendLine("        reminders_running = ${if (on) "True" else "False"}")
                     toast(b.toast)
                     val t = b.text.ifBlank { if (on) "▶️ Напоминания включены." else "⏹ Напоминания выключены." }
-                    sb.appendLine("        bot.edit_message_text(${textExpression(t)}, chat_id, $mid)")
+                    sb.appendLine("        bot.edit_message_text(${textExpression(t)}, chat_id, $mid$pmArg)")
+                }
+                "submenu" -> {
+                    toast(b.toast)
+                    val subSig = b.submenu.joinToString("|") { btnKey(it) }
+                    val subFn = ctx.submenuBySig[subSig] ?: b.menuTarget.takeIf { it.isNotBlank() }
+                    val kbTail = if (subFn != null) ", reply_markup=${subFn}()" else ""
+                    val t = textExpression(b.text.ifBlank { b.label })
+                    sb.appendLine("        bot.edit_message_text($t, chat_id, $mid$pmArg$kbTail)")
                 }
                 "pack" -> {
                     toast(b.toast)
-                    if (b.edit) sb.appendLine("        bot.edit_message_text(${packExpr(b.packId, ctx)}, chat_id, $mid)")
-                    else sb.appendLine("        bot.send_message(chat_id, ${packExpr(b.packId, ctx)})")
+                    if (b.edit) sb.appendLine("        bot.edit_message_text(${packExpr(b.packId, ctx)}, chat_id, $mid$pmArg)")
+                    else sb.appendLine("        bot.send_message(chat_id, ${packExpr(b.packId, ctx)}$pmArg)")
                 }
                 "script" -> {
                     toast(b.toast)
-                    sb.appendLine("        bot.send_message(chat_id, run_script(${py(b.script.take(4000))}))")
+                    sb.appendLine("        bot.send_message(chat_id, run_script(${py(b.script.take(4000))})$pmArg)")
+                }
+                "llm" -> {
+                    toast(b.toast)
+                    val q = b.text.ifBlank { b.label }
+                    if (b.edit) sb.appendLine("        bot.edit_message_text(ask_llm(chat_id, ${py(q)}), chat_id, $mid$pmArg)")
+                    else sb.appendLine("        bot.send_message(chat_id, ask_llm(chat_id, ${py(q)})$pmArg)")
+                }
+                "media" -> {
+                    toast(b.toast)
+                    val fn = mediaFnOf(b.mediaType)
+                    val cap = if (b.text.isNotBlank()) ", caption=${py(b.text)}" else ""
+                    sb.appendLine("        bot.send_$fn(chat_id, ${py(b.mediaRef)}$cap$pmArg)")
                 }
                 "anim" -> {
                     toast(b.toast)
@@ -497,8 +588,8 @@ object SettingsExporter {
                 else -> {
                     toast(b.toast)
                     val t = textExpression(b.text.ifBlank { b.label })
-                    if (b.edit) sb.appendLine("        bot.edit_message_text($t, chat_id, $mid)")
-                    else sb.appendLine("        bot.send_message(chat_id, $t)")
+                    if (b.edit) sb.appendLine("        bot.edit_message_text($t, chat_id, $mid$pmArg)")
+                    else sb.appendLine("        bot.send_message(chat_id, $t$pmArg)")
                 }
             }
         }
@@ -508,22 +599,36 @@ object SettingsExporter {
 
     private fun emitRule(sb: StringBuilder, rule: BotRuleEntity, ctx: Ctx) {
         ruleHeader(rule).forEach { sb.appendLine(it) }
+        val opts = BotJson.ruleOptions(rule.options)
+        val extra = optArgs(opts)
         val menuName = ctx.menus.firstOrNull { (_, m) ->
             m.isNotEmpty() && m.map { it.id }.toSet() == BotJson.menu(rule.menu).map { it.id }.toSet()
         }?.first
         val kbArg = if (menuName != null) ", reply_markup=$menuName()" else ""
         when (rule.actionType) {
-            "pack" -> sb.appendLine("    bot.send_message(msg.chat.id, ${packExpr(rule.packId, ctx)}$kbArg)")
+            "pack" -> sb.appendLine("    bot.send_message(msg.chat.id, ${packExpr(rule.packId, ctx)}$extra$kbArg)")
             "anim" -> {
                 val spec = Anim.decode(rule.script)
                 sb.appendLine("    " + animCall(spec, "msg.chat.id", ctx.animConstOf[Anim.encode(spec)], ctx.consts, kbArg))
             }
             "dice" -> sb.appendLine("    bot.send_dice(msg.chat.id, emoji=${py(rule.responseText.trim().ifBlank { "🎲" })})")
-            "llm" -> sb.appendLine("    bot.send_message(msg.chat.id, ask_llm(msg.chat.id, msg.text)$kbArg)")
+            "llm" -> sb.appendLine("    bot.send_message(msg.chat.id, ask_llm(msg.chat.id, msg.text)$extra$kbArg)")
             "script" -> sb.appendLine("    bot.send_message(msg.chat.id, run_script(${
                 py(rule.script.take(4000))
-            })$kbArg)")
-            else -> sb.appendLine("    bot.send_message(msg.chat.id, ${textExpression(rule.responseText)}$kbArg)")
+            })$extra$kbArg)")
+            "media" -> {
+                val fn = mediaFnOf(opts.mediaType)
+                val cap = if (rule.responseText.isNotBlank()) ", caption=${py(rule.responseText)}" else ""
+                sb.appendLine("    bot.send_$fn(msg.chat.id, ${py(opts.mediaRef)}$cap$extra$kbArg)")
+            }
+            "poll" -> {
+                val q = opts.pollQuestion.ifBlank { rule.responseText }
+                val optArr = opts.pollOptions.joinToString(", ") { py(it) }
+                sb.appendLine("    bot.send_poll(msg.chat.id, ${py(q)}, [$optArr], is_anonymous=${
+                    if (opts.pollAnonymous) "True" else "False"
+                }, allows_multiple_answers=${if (opts.pollMultiple) "True" else "False"}$kbArg)")
+            }
+            else -> sb.appendLine("    bot.send_message(msg.chat.id, ${textExpression(rule.responseText)}$extra$kbArg)")
         }
         sb.appendLine()
         sb.appendLine()

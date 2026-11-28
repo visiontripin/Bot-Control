@@ -266,23 +266,32 @@ fun ButtonsScreen(localStore: LocalBotStore, repository: BotRepository, onBack: 
 }
 
 @Composable
-private fun ButtonLine(b: InlineBtn) {
+private fun ButtonLine(b: InlineBtn, indent: Int = 0) {
     val action = when (b.action) {
         "pack" -> "→ случайное из набора ${b.packId}"
         "reminders_on" -> "→ включить напоминания"
         "reminders_off" -> "→ выключить напоминания"
         "script" -> "→ скрипт JS"
         "url" -> "→ ссылка ${b.url}"
+        "web_app" -> "→ Mini App ${b.url}"
+        "copy_text" -> "→ копировать: ${b.text.take(25)}"
+        "switch_inline" -> "→ запрос в чат: ${b.text.take(25)}"
+        "llm" -> "→ ИИ: ${b.text.ifBlank { b.label }.take(25)}"
+        "media" -> "→ медиа (${b.mediaType.ifBlank { "photo" }})"
+        "submenu" -> "→ подменю (${b.submenu.size} кн.)"
+        "back" -> "→ ⬅️ назад"
         else -> "→ текст: ${b.text.take(30)}"
     }
     val flags = buildList {
         if (b.edit) add("правит сообщение")
+        if (b.parseMode.isNotBlank()) add(b.parseMode)
         if (b.row > 0) add("ряд ${b.row}")
     }.joinToString(", ")
-    Column(Modifier.padding(start = 8.dp, top = 2.dp, bottom = 2.dp)) {
+    Column(Modifier.padding(start = (8 + indent * 12).dp, top = 2.dp, bottom = 2.dp)) {
         Text("🔘 ${b.label}", style = MaterialTheme.typography.bodySmall)
         Text(action + if (flags.isNotBlank()) " ($flags)" else "",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
+        b.submenu.forEach { child -> ButtonLine(child, indent + 1) }
     }
 }

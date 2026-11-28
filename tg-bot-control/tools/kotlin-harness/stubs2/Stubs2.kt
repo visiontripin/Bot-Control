@@ -11,4 +11,5 @@ data class BotRuleEntity(
     val packId: String = "",
     val menu: String = "",
     val botId: Long = 1L,
+    val options: String = "",
 )

@@ -13,6 +13,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -170,6 +171,30 @@ fun BotSettingsScreen(localStore: LocalBotStore, repository: com.botcontrol.admi
                             if (i == index) m.copy(description = it) else m } },
                         label = { Text("Описание (видно в меню)") },
                         singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(
+                            "default" to "Все чаты",
+                            "all_private_chats" to "Личка",
+                            "all_group_chats" to "Группы",
+                            "all_chat_administrators" to "Админы",
+                        ).forEach { (sc, lbl) ->
+                            FilterChip(
+                                selected = (cmd.scope.ifBlank { "default" }) == sc,
+                                onClick = {
+                                    menu = menu.mapIndexed { i, m ->
+                                        if (i == index) m.copy(scope = sc) else m
+                                    }
+                                },
+                                label = { Text(lbl) },
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        cmd.languageCode, { v -> menu = menu.mapIndexed { i, m ->
+                            if (i == index) m.copy(languageCode = v.lowercase().take(5)) else m } },
+                        label = { Text("Язык ISO (пусто = любой, напр. ru / en)") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth())
                 }
             }
         }
@@ -192,7 +217,7 @@ fun BotSettingsScreen(localStore: LocalBotStore, repository: com.botcontrol.admi
                     return@launch
                 }
                 TelegramApi(token)
-                    .setMyCommands(cleanMenu.map { it.command to it.description })
+                    .setMyCommandsScoped(cleanMenu)
                     .onSuccess {
                         error = ""
                         localStore.setMenuSignature(

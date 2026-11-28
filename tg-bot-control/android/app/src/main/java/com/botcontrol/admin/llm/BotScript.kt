@@ -1,5 +1,7 @@
 package com.botcontrol.admin.llm
 
+import com.botcontrol.admin.data.BotMatcher
+import com.botcontrol.admin.data.MessageCtx
 import org.mozilla.javascript.ClassShutter
 import org.mozilla.javascript.Context
 import org.mozilla.javascript.Function
@@ -13,7 +15,7 @@ import org.mozilla.javascript.ScriptableObject
  *
  * Script contract:
  *   function handle(e) { ... return "text reply" }
- * where e = { user: String, text: String, chatId: String }.
+ * where e = { user, text, chatId, username, userId, chatType, args, messageId, replyToText, kind, fileId }.
  */
 object BotScript {
 
@@ -26,7 +28,13 @@ object BotScript {
   return "Ты написал: " + e.text;
 }"""
 
-    fun run(source: String, user: String, text: String, chatId: Long): Result<String> {
+    fun run(
+        source: String,
+        user: String,
+        text: String,
+        chatId: Long,
+        ctx: MessageCtx? = null,
+    ): Result<String> {
         val cx = Context.enter()
         try {
             cx.optimizationLevel = -1 // interpreter: no bytecode generation on ART
@@ -39,6 +47,14 @@ object BotScript {
             ScriptableObject.putProperty(arg, "user", user)
             ScriptableObject.putProperty(arg, "text", text)
             ScriptableObject.putProperty(arg, "chatId", chatId.toString())
+            ScriptableObject.putProperty(arg, "username", ctx?.username.orEmpty())
+            ScriptableObject.putProperty(arg, "userId", (ctx?.userId ?: chatId).toString())
+            ScriptableObject.putProperty(arg, "chatType", ctx?.chatType.orEmpty())
+            ScriptableObject.putProperty(arg, "args", BotMatcher.extractCommandArgsRaw(text))
+            ScriptableObject.putProperty(arg, "messageId", ctx?.messageId ?: 0)
+            ScriptableObject.putProperty(arg, "replyToText", ctx?.replyToText.orEmpty())
+            ScriptableObject.putProperty(arg, "kind", ctx?.kind.orEmpty())
+            ScriptableObject.putProperty(arg, "fileId", ctx?.fileId.orEmpty())
             val result = fn.call(cx, scope, scope, arrayOf(arg))
             return Result.success(Context.toString(result))
         } catch (e: Throwable) {

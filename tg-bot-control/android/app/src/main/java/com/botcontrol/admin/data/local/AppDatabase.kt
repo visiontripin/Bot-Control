@@ -37,15 +37,16 @@ interface DraftDao {
 @Entity(tableName = "bot_rules")
 data class BotRuleEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
-    val type: String,          // "command" | "contains" | "button"
+    val type: String,          // "command" | "contains" | "button" | "regex"
     val pattern: String,
     val responseText: String,
     val enabled: Boolean = true,
-    val actionType: String = "text", // "text" | "script" | "llm" | "pack"
+    val actionType: String = "text", // "text" | "script" | "llm" | "pack" | "anim" | "dice" | "media" | "poll"
     val script: String = "",         // JS source when actionType == "script"
     val packId: String = "",         // набор ответов when actionType == "pack"
     val menu: String = "",           // JSON: inline-кнопки под ответом
     val botId: Long = 1L,            // какому боту принадлежит правило
+    val options: String = "",        // JSON RuleOptions: parseMode, флаги, медиа, опрос
 )
 
 @Dao
@@ -63,7 +64,7 @@ interface BotRuleDao {
     suspend fun delete(id: Int)
 }
 
-@Database(entities = [DraftEntity::class, BotRuleEntity::class], version = 5, exportSchema = false)
+@Database(entities = [DraftEntity::class, BotRuleEntity::class], version = 6, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun draftDao(): DraftDao
     abstract fun botRuleDao(): BotRuleDao
@@ -71,6 +72,12 @@ abstract class AppDatabase : RoomDatabase() {
     companion object {
         @Volatile
         private var instance: AppDatabase? = null
+
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE bot_rules ADD COLUMN options TEXT NOT NULL DEFAULT ''")
+            }
+        }
 
         private val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -98,7 +105,9 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "botcontrol.db",
-                ).fallbackToDestructiveMigration().build().also { instance = it }
+                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .fallbackToDestructiveMigration()
+                    .build().also { instance = it }
             }
     }
 }

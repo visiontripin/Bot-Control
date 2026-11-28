@@ -62,7 +62,7 @@ fun ScriptEditorScreen(repository: BotRepository, ruleId: Int, onBack: () -> Uni
             TextButton(onClick = onBack) { Text("← Назад") }
             Text("Скрипт: $pattern", style = MaterialTheme.typography.titleSmall)
         }
-        Text("JS-функция handle(e): e.user, e.text, e.chatId → верни текст ответа. Без доступа к Java/сети.",
+        Text("JS-функция handle(e): e.user, e.text, e.chatId, e.username, e.userId, e.chatType, e.args, e.replyToText, e.kind, e.fileId → верни текст ответа. Без доступа к Java/сети.",
             style = MaterialTheme.typography.bodySmall)
         if (error.isNotBlank()) ErrorText(error)
         if (message.isNotBlank()) Text(message, color = MaterialTheme.colorScheme.primary)
