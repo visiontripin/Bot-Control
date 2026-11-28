@@ -20,6 +20,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -56,6 +57,8 @@ fun FileServerScreen(
     val clipboard = LocalClipboardManager.current
     var running by remember { mutableStateOf(false) }
     var server by remember { mutableStateOf<FileServer?>(null) }
+    var requirePin by remember { mutableStateOf(true) }
+    var sessionPin by remember { mutableStateOf("") }
     var bots by remember { mutableStateOf(listOf<BotProfile>()) }
     var botId by remember { mutableStateOf(1L) }
     var kind by remember { mutableStateOf(BotFiles.MEDIA) }
@@ -151,6 +154,18 @@ fun FileServerScreen(
         }
 
         Spacer(Modifier.padding(6.dp))
+        Row(
+            Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("🔒 Защита PIN-кодом в Wi-Fi (рекомендуется)", style = MaterialTheme.typography.bodyMedium)
+                Text("Блокирует случайный доступ к файлам из общей Wi-Fi сети; Webhook и Mini App работают без PIN.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(checked = requirePin, enabled = !running, onCheckedChange = { requirePin = it })
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = {
@@ -158,14 +173,18 @@ fun FileServerScreen(
                         server?.stop()
                         server = null
                         running = false
+                        sessionPin = ""
                         message = "⏹ Сервер остановлен"
                     } else {
                         runCatching {
-                            val s = FileServer(context)
+                            val s = FileServer(context, requirePin = requirePin)
                             s.start()
                             server = s
                             running = true
-                            message = "🌐 Сервер запущен: http://${FileServer.lanAddress() ?: "0.0.0.0"}:${FileServer.PORT}"
+                            sessionPin = if (requirePin) s.accessPin else ""
+                            val lan = FileServer.lanAddress() ?: "0.0.0.0"
+                            val suffix = if (requirePin) "/?pin=${s.accessPin}" else ""
+                            message = "🌐 Сервер запущен: http://$lan:${FileServer.PORT}$suffix"
                         }.onFailure {
                             message = "❌ Не удалось запустить: ${it.message?.take(120)}"
                         }
@@ -183,25 +202,35 @@ fun FileServerScreen(
         }
 
         if (running) {
+            val lan = FileServer.lanAddress() ?: "<нет Wi-Fi>"
+            val fullUrl = if (sessionPin.isNotBlank()) "http://$lan:${FileServer.PORT}/?pin=$sessionPin"
+            else "http://$lan:${FileServer.PORT}"
             Spacer(Modifier.padding(4.dp))
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp)) {
                     Text("Сервер работает в локальной сети", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        "http://${FileServer.lanAddress() ?: "<нет Wi-Fi>"}:${FileServer.PORT}",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
+                    Text(fullUrl, style = MaterialTheme.typography.bodyMedium)
+                    if (sessionPin.isNotBlank()) {
+                        Text("PIN-код доступа: $sessionPin", style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary)
+                    }
                     Text(
                         "Открой адрес в браузере компьютера/телефона той же сети — загрузка и скачивание файлов этого бота.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    TextButton(onClick = {
-                        clipboard.setText(
-                            AnnotatedString("http://${FileServer.lanAddress()}:${FileServer.PORT}"),
-                        )
-                        message = "📋 Адрес скопирован"
-                    }) { Text("Скопировать адрес") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            clipboard.setText(AnnotatedString(fullUrl))
+                            message = "📋 Адрес скопирован"
+                        }) { Text("Скопировать адрес") }
+                        if (sessionPin.isNotBlank()) {
+                            TextButton(onClick = {
+                                clipboard.setText(AnnotatedString(sessionPin))
+                                message = "📋 PIN скопирован"
+                            }) { Text("Скопировать PIN") }
+                        }
+                    }
                 }
             }
         }

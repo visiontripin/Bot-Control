@@ -7,27 +7,50 @@ import com.botcontrol.admin.data.BotFiles
 import fi.iki.elonen.NanoHTTPD
 import java.io.File
 import java.io.FileInputStream
+import java.security.SecureRandom
 import kotlinx.coroutines.runBlocking
 
 /**
  * Файловый сервер приложения (NanoHTTPD, порт 8090): страница в локальной
  * Wi-Fi сети для загрузки и скачивания файлов ботов + опциональный локальный
- * Webhook-приёмник Telegram (`POST /telegram-webhook/<botId>`).
+ * Webhook-приёмник Telegram (`POST /telegram-webhook/<botId>`) + Mini App.
  */
-class FileServer(context: Context) : NanoHTTPD(PORT) {
+class FileServer(
+    context: Context,
+    val requirePin: Boolean = true,
+) : NanoHTTPD(PORT) {
 
     private val appContext = context.applicationContext
+    val accessPin: String = String.format(java.util.Locale.US, "%06d", SecureRandom().nextInt(1_000_000))
 
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri.orEmpty()
         return try {
+            // Telegram webhook и публичный Mini App не требуют LAN PIN-кода администратора
+            if (session.method == Method.POST && uri.startsWith("/telegram-webhook/")) {
+                return webhook(session, uri)
+            }
+            if (session.method == Method.GET && uri.startsWith("/miniapp/")) {
+                return miniApp(uri)
+            }
+            if (session.method == Method.POST && uri == "/auth") {
+                return handleAuth(session)
+            }
+            if (requirePin && !isPinAuthorized(session)) {
+                return pinGatePage(session)
+            }
             when {
-                session.method == Method.POST && uri.startsWith("/telegram-webhook/") -> webhook(session, uri)
-                session.method == Method.GET && uri.startsWith("/miniapp/") -> miniApp(uri)
                 session.method == Method.POST && uri == "/upload" -> upload(session)
                 uri == "/delete" -> delete(session)
                 uri.startsWith("/file/") -> download(uri.removePrefix("/file/"))
-                else -> page(session)
+                else -> {
+                    val queryPin = session.parameters["pin"]?.firstOrNull().orEmpty()
+                    val resp = page(session)
+                    if (requirePin && queryPin == accessPin) {
+                        resp.addHeader("Set-Cookie", "bc_pin=$accessPin; Path=/; HttpOnly; SameSite=Strict")
+                    }
+                    resp
+                }
             }
         } catch (e: Exception) {
             newFixedLengthResponse(
@@ -35,6 +58,53 @@ class FileServer(context: Context) : NanoHTTPD(PORT) {
                 "Ошибка: ${e.message ?: e.javaClass.simpleName}",
             )
         }
+    }
+
+    private fun isPinAuthorized(session: IHTTPSession): Boolean {
+        val hdr = session.headers["x-botcontrol-pin"]?.trim().orEmpty()
+        if (hdr == accessPin) return true
+        val qp = session.parameters["pin"]?.firstOrNull()?.trim().orEmpty()
+        if (qp == accessPin) return true
+        val cookieHdr = session.headers["cookie"].orEmpty()
+        return cookieHdr.split(";").any { part ->
+            val eq = part.indexOf('=')
+            if (eq <= 0) false
+            else part.substring(0, eq).trim() == "bc_pin" && part.substring(eq + 1).trim() == accessPin
+        }
+    }
+
+    private fun handleAuth(session: IHTTPSession): Response {
+        val files = HashMap<String, String>()
+        session.parseBody(files)
+        val entered = session.parameters["pin"]?.firstOrNull()?.trim().orEmpty()
+        return if (!requirePin || entered == accessPin) {
+            val r = redirect("/")
+            r.addHeader("Set-Cookie", "bc_pin=$accessPin; Path=/; HttpOnly; SameSite=Strict")
+            r
+        } else {
+            pinGatePage(session, wrongPin = true)
+        }
+    }
+
+    private fun pinGatePage(session: IHTTPSession, wrongPin: Boolean = false): Response {
+        val sb = StringBuilder()
+        sb.append("<!doctype html><html lang='ru'><head><meta charset='utf-8'>")
+        sb.append("<meta name='viewport' content='width=device-width,initial-scale=1'>")
+        sb.append("<title>BotControl — вход по PIN</title>")
+        sb.append("<style>body{font-family:system-ui,sans-serif;background:#0E1621;color:#F5F6F7;")
+        sb.append("display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:16px}")
+        sb.append(".card{background:#17212B;border:1px solid #33475A;border-radius:16px;padding:22px;max-width:360px;width:100%}")
+        sb.append("input{width:100%;box-sizing:border-box;background:#0E1621;color:#F5F6F7;border:1px solid #33475A;")
+        sb.append("border-radius:10px;padding:12px;font-size:18px;letter-spacing:4px;text-align:center;margin:12px 0}")
+        sb.append("button{width:100%;background:#2B5278;color:#fff;border:none;border-radius:10px;padding:12px;font-size:15px;font-weight:600;cursor:pointer}")
+        sb.append("</style></head><body><div class='card'>")
+        sb.append("<h2>🔒 Доступ к файлам BotControl</h2>")
+        sb.append("<p style='color:#8FA1B3;font-size:14px'>Введите 6-значный PIN-код с экрана «Файлы и сервер» на телефоне.</p>")
+        if (wrongPin) sb.append("<p style='color:#F87171;font-size:14px'>Неверный PIN-код.</p>")
+        sb.append("<form method='post' action='/auth'>")
+        sb.append("<input name='pin' type='password' inputmode='numeric' maxlength='6' placeholder='000000' autofocus required>")
+        sb.append("<button type='submit'>Войти</button></form></div></body></html>")
+        return newFixedLengthResponse(Response.Status.UNAUTHORIZED, "text/html; charset=utf-8", sb.toString())
     }
 
     // ---------- страница ----------

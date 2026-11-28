@@ -5,6 +5,7 @@ import com.botcontrol.admin.data.MessageCtx
 import org.mozilla.javascript.BaseFunction
 import org.mozilla.javascript.ClassShutter
 import org.mozilla.javascript.Context
+import org.mozilla.javascript.ContextFactory
 import org.mozilla.javascript.Function
 import org.mozilla.javascript.Scriptable
 import org.mozilla.javascript.ScriptableObject
@@ -257,6 +258,35 @@ object BotScript {
         ScriptableObject.putProperty(scope, "http", httpObj)
     }
 
+    private class ScriptTimeoutError(msg: String) : Error(msg)
+
+    private object SandboxedFactory : ContextFactory() {
+        private val DEADLINE_KEY = Any()
+
+        override fun makeContext(): Context {
+            val cx = super.makeContext()
+            cx.optimizationLevel = -1 // interpreter: no bytecode generation on ART
+            cx.instructionObserverThreshold = 10_000
+            cx.setClassShutter(ClassShutter { false }) // no java.* from scripts
+            return cx
+        }
+
+        override fun observeInstructionCount(cx: Context?, instructionCount: Int) {
+            val deadline = cx?.getThreadLocal(DEADLINE_KEY) as? Long ?: return
+            if (System.currentTimeMillis() > deadline) {
+                throw ScriptTimeoutError("Превышен лимит времени выполнения скрипта (2 с)")
+            }
+        }
+
+        fun setDeadline(cx: Context, timeoutMs: Long) {
+            cx.putThreadLocal(DEADLINE_KEY, System.currentTimeMillis() + timeoutMs)
+        }
+
+        fun clearDeadline(cx: Context) {
+            cx.putThreadLocal(DEADLINE_KEY, null)
+        }
+    }
+
     fun run(
         source: String,
         user: String,
@@ -266,10 +296,12 @@ object BotScript {
         dbSession: ScriptDbSession? = null,
         httpBridge: ScriptHttpBridge? = null,
     ): Result<String> {
-        val cx = Context.enter()
+        if (source.length > 64_000) {
+            return Result.failure(IllegalArgumentException("Скрипт слишком большой (максимум 64 КБ)"))
+        }
+        val cx = SandboxedFactory.enterContext()
+        SandboxedFactory.setDeadline(cx, 2_000L)
         try {
-            cx.optimizationLevel = -1 // interpreter: no bytecode generation on ART
-            cx.setClassShutter(ClassShutter { false }) // no java.* from scripts
             val scope = cx.initSafeStandardObjects()
             attachDb(cx, scope, dbSession ?: ScriptDbSession())
             attachHttp(cx, scope, httpBridge)
@@ -294,11 +326,12 @@ object BotScript {
             ScriptableObject.putProperty(arg, "fileSize", (ctx?.fileSize ?: 0L).toDouble())
             ScriptableObject.putProperty(arg, "localPath", ctx?.localMediaPath.orEmpty())
             val result = fn.call(cx, scope, scope, arrayOf(arg))
-            return Result.success(Context.toString(result))
+            return Result.success(Context.toString(result).take(16_000))
         } catch (e: Throwable) {
             return Result.failure(
                 IllegalStateException("${e.javaClass.simpleName}: ${e.message ?: "ошибка скрипта"}"))
         } finally {
+            SandboxedFactory.clearDeadline(cx)
             Context.exit()
         }
     }

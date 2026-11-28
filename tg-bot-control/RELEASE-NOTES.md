@@ -1,3 +1,21 @@
+# BotControl v2.2.0 (code 43)
+
+## 🔄 Паритет desktop-web (0.7.0), безопасность, диагностика и сквозные тесты
+
+Пятый, завершающий этап дорожной карты `ДОРОЖНАЯ-КАРТА-TELEGRAM.md`:
+
+- **Паритет `desktop-web` (`BotControl.exe 0.7.0`):**
+  - Дисковое хранилище ботов `.bc` с ротацией последних 10 бэкапов (`BotDiskStore`) и мультибот-менеджер (`MultiBotManager`, без хранения токенов на диске).
+  - Полный импорт и экспорт в формат Android `.py` (`import_android_py` / `export_android_py`), триггеры `regex`, `HTML`/`MarkdownV2` с безопасным откатом, `sendDice`, медиа по `file_id`/URL, вложенные inline-меню (`callback_query`), FSM-анкеты, подстановки `{user}/{args}`, тёмная тема и экспорт диагностики (`/api/diagnostics`).
+  - PIN-защита LAN-режима (`--pin`) и исправленный CORS/Origin для `localhost`.
+- **Безопасность и UX Android (`v2.2.0`):**
+  - `res/xml/network_security_config.xml` (запрет глобального cleartext HTTP, разрешение только для `localhost`/`127.0.0.1`/`10.0.2.2`/`.local`).
+  - Автоматический 6-значный PIN-код для Wi-Fi интерфейса файлового сервера `FileServer` (Webhook и Mini App работают без PIN).
+  - Ограничение времени исполнения JS-скриптов в Rhino (2-секундный `ContextFactory` watchdog + лимит размера 64 КБ).
+  - Мастер первого запуска на главном экране, предпросмотр импорта с опцией замены существующих правил и единый отчёт диагностики без токенов в «Общем логе» (`BotDiagnostics`).
+- **Общий мок Telegram API и регрессия:**
+  - Контрактные фикстуры и локальный мок-сервер `tools/shared-telegram-mock/` + единый скрипт полной проверки `tools/verify-release.sh`.
+
 # BotControl v2.1.0 (code 42)
 
 ## ⚡ Inline-режим `@bot`, Telegram Stars (`XTR`), Mini Apps, HTTP API и входящие медиа

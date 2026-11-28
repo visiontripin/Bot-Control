@@ -99,13 +99,15 @@ Android, `botcontrol-windows.yml` — Windows, `botcontrol-attach.yml` —
 Android SDK 35; для `desktop-web/` достаточно Python 3.9+.
 
 - **Текущая версия кода Android (ветка разработки / CI-артефакт):**
-  **v2.1.0 (versionCode 42)** (выполнены этапы 1–4 из
-  [`ДОРОЖНАЯ-КАРТА-TELEGRAM.md`](tg-bot-control/ДОРОЖНАЯ-КАРТА-TELEGRAM.md);
-  следующий versionCode — **43**).
+  **v2.2.0 (versionCode 43)** (выполнены все 5 этапов из
+  [`ДОРОЖНАЯ-КАРТА-TELEGRAM.md`](tg-bot-control/ДОРОЖНАЯ-КАРТА-TELEGRAM.md)).
+- **Версия локального веб-редактора / Windows (`desktop-web/`):** **0.7.0**
+  (паритет правил, regex, HTML/MarkdownV2, медиа, кубик, callback inline-меню,
+  FSM, мультибот на диске и полный импорт/экспорт Android `.py`).
 - **Последний опубликованный GitHub Release (`main`):** **v1.7.5 (versionCode 38)**,
   тег `botcontrol-v1.7.5-code38`, sha256
   `d8698e3fa45936842b6e658bc9242041feae54fdc568e3881b21b6579bfb236d`.
-- **Текущее превью Windows:** **0.6.0**, тег
+- **Последний опубликованный превью-релиз Windows:** **0.6.0**, тег
   `botcontrol-windows-preview-0.6.0`, sha256
   `bcf3138b7d56c6f5dd26701d37423791fcd476c255641d9944814753d75085d3`.
 

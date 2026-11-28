@@ -285,7 +285,11 @@ fun NavGraph(
             ExportScreen(localStore, repository, onBack = { nav.popBackStack() })
         }
         composable(Routes.APP_LOG) {
-            AppLogScreen(onBack = { nav.popBackStack() })
+            AppLogScreen(
+                onBack = { nav.popBackStack() },
+                localStore = localStore,
+                repository = repository,
+            )
         }
         composable(Routes.FILES) {
             FileServerScreen(localStore, onBack = { nav.popBackStack() })

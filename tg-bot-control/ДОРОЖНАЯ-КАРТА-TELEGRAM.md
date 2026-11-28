@@ -13,7 +13,7 @@
 | **Этап 2** | **v1.9.0** | Память, база подписчиков (`BotUserEntity`), персистентный JS `db` (`BotKvEntity`), пошаговые сценарии (`FsmEngine`), роли/админы/обязательная подписка, массовые рассылки (`BroadcastEngine`), разовые даты и альбомы объявлений | ✅ **Выполнен (v1.9.0, code 40)** |
 | **Этап 3** | **v2.0.0** | Группы, каналы, темы форумов, реакции, опросы, авто-модерация (`GroupModerationEngine` + `GroupsScreen`) и Webhook-адаптер | ✅ **Выполнен (v2.0.0, code 41)** |
 | **Этап 4** | **v2.1.0** | Инлайн-режим `@bot`, Telegram Stars / платежи, Mini Apps (`web_app_data`) и внешние API | ✅ **Выполнен (v2.1.0, code 42)** |
-| **Этап 5** | **v2.2.0** | Полный паритет `desktop-web` (`BotControl.exe`), единый формат `.py` ↔ `.bc`, мастер запуска и техдолг | 📋 Запланирован |
+| **Этап 5** | **v2.2.0** | Полный паритет `desktop-web` (`BotControl.exe 0.7.0`), единый формат `.py` ↔ `.bc`, общий Telegram-мок и автотесты, безопасность (`networkSecurityConfig`, PIN-защита FileServer, лимит времени Rhino), мастер первого запуска, диагностика `U-X3` и `verify-release.sh` | ✅ **Выполнен (v2.2.0, code 43)** |
 
 ---
 
@@ -103,13 +103,13 @@
 
 ---
 
-## Этап 5 (v2.2.0) — «Паритет `desktop-web` (`BotControl.exe`) и закрытие техдолга»
+## Этап 5 (v2.2.0) — «Паритет `desktop-web` (`BotControl.exe`) и закрытие техдолга» (✅ выполнено в v2.2.0, code 43)
 
-1. **Настольная/веб-версия (`tg-bot-control/desktop-web/`):**
-   - Мультиботы (`U-W1`) и хранение конфигов на диске с ротацией бэкапов (`U-W2`).
-   - Обработка `callback_query`, вложенные inline-меню, `parse_mode`, медиа по `file_id`, `sendDice`, `regex`, FSM и база подписчиков.
-   - Полноценный импорт/экспорт Android `.py` ↔ `.bc` (`U-X1`) и общий Telegram-мок сервер для сквозных автотестов (`U-X2`).
-2. **Инфраструктура, безопасность и UX (`U-A1..U-A4`, `A10`, `S-1`):**
-   - Release-подпись и per-ABI сборки (`U-A1`), мастер первого запуска (`U-A2`), предпросмотр/diff импорта (`U-A3`), упрощённая навигация (`U-A4`).
-   - Физическая очистка архивных серверных экранов, `networkSecurityConfig` для локальных подсетей (`A10`), единый экспорт диагностики (`U-X3`).
+1. **Настольная/веб-версия (`tg-bot-control/desktop-web/` `0.7.0`):**
+   - Мультиботы (`MultiBotManager`, `U-W1`) и хранение конфигов `.bc` на диске (`BotDiskStore`, `U-W2`) с ротацией последних 10 бэкапов и тёмной темой (`U-W9`).
+   - Обработка `callback_query` (вложенные `inlineButtons` / `submenu` / `back` / `copy_text`), `parse_mode` (`HTML`/`MarkdownV2` с откатом на обычный текст), медиа по `file_id`/URL (`sendPhoto`, `sendSticker`, `sendAnimation`, `sendDocument`, `sendVideo`, `sendVoice`, `sendAudio`), `sendDice`, `regex`-триггеры, FSM-анкеты, подстановки `{user}/{args}` и учёт пользователей.
+   - Полноценный импорт/экспорт Android `.py` ↔ `.bc` (`android_import.py`, `U-X1`), PIN-защита в LAN-режиме (`--pin`) и общий Telegram-мок сервер `tools/shared-telegram-mock/` (`mock_telegram_server.py` + `contract_updates.json`) со сквозными автотестами (`U-X2`, 38 Python + Node + `Stage5Test.kt`).
+2. **Инфраструктура, безопасность и UX (`U-A2`, `U-A3`, `A10`, `S-3..S-7`, `U-X3`, `D-7`):**
+   - Мастер первого запуска (`WelcomeScreen`, `U-A2`), предпросмотр импорта с опцией замены существующих правил (`ImportScreen`, `U-A3`), единый экспорт диагностики без токенов (`BotDiagnostics` + `AppLogScreen`, `U-X3`).
+   - `res/xml/network_security_config.xml` (запрет открытого HTTP кроме `localhost`/`127.0.0.1`/`10.0.2.2`/`.local`, закрыт `A10`/`S-4`), 6-значный PIN-код для Wi-Fi файлового сервера `FileServer` (`S-5`), 2-секундный watchdog времени исполнения JS в Rhino (`SandboxedFactory`, `S-7`) и единый скрипт проверки `tools/verify-release.sh` (`D-7`).
    - Напоминание владельцу: отозвать старый токен `8709443116` из истории git через `@BotFather` (`/revoke`, `S-1`).

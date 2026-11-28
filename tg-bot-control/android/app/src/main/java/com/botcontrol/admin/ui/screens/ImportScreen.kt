@@ -67,6 +67,10 @@ fun ImportScreen(
     var source by remember { mutableStateOf("") }
     var parsed by remember { mutableStateOf<ScriptImporter.Parsed?>(null) }
     val checked = remember { mutableStateMapOf<String, Boolean>() }
+    var replaceRules by remember { mutableStateOf(false) }
+    var existingRulesCount by remember { mutableStateOf(0) }
+    var existingPacksCount by remember { mutableStateOf(0) }
+    var existingSchedCount by remember { mutableStateOf(0) }
     var showGuide by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
@@ -80,6 +84,9 @@ fun ImportScreen(
         scope.launch {
             val botId = resolveBotId(localStore)
             val allPacks = localStore.packs()
+            existingRulesCount = repository.botRules(botId).size
+            existingPacksCount = allPacks.count { it.ownerBotId == botId || it.ownerBotId == 0L }
+            existingSchedCount = localStore.schedule(botId).size
             val accessiblePacks = allPacks.filter { it.ownerBotId == botId } +
                 allPacks.filter { it.ownerBotId == 0L }
             val p = ScriptImporter.parse(text, accessiblePacks)
@@ -164,6 +171,18 @@ fun ImportScreen(
                         Spacer(Modifier.height(2.dp))
                     }
                     Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Предпросмотр: сейчас у бота $existingRulesCount правил, $existingPacksCount наборов, $existingSchedCount напоминаний. " +
+                            "Будет применено: ${p.commands.size} команд, ${p.textRules.size} правил, ${p.packs.size} наборов, ${p.schedule.size} событий.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = replaceRules, onCheckedChange = { replaceRules = it })
+                        Text("Заменить существующие правила бота (вместо дозаписи)",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    Spacer(Modifier.height(4.dp))
                     Button(onClick = {
                         scope.launch {
                             val botId = resolveBotId(localStore)
@@ -172,6 +191,7 @@ fun ImportScreen(
                                 repository = repository,
                                 botId = botId,
                                 parsed = p,
+                                replaceExistingRules = replaceRules,
                                 wanted = { key -> checked[key] ?: true },
                             )
                             com.botcontrol.admin.service.BotLog.log(localStore, botId, "📥 Импорт применён: ${result.take(200)}")
@@ -251,9 +271,15 @@ private suspend fun applyParsed(
     repository: BotRepository,
     botId: Long,
     parsed: ScriptImporter.Parsed,
+    replaceExistingRules: Boolean = false,
     wanted: (String) -> Boolean,
 ): String {
     val done = ArrayList<String>()
+
+    if (replaceExistingRules && (wanted(ScriptImporter.SEC_COMMANDS) || wanted(ScriptImporter.SEC_RULES))) {
+        repository.deleteBotRules(botId)
+        done.add("старые правила очищены")
+    }
 
     // ---------- наборы ответов (сначала: нужны их id для кнопок) ----------
     val packIdMap = HashMap<String, String>() // imp_XXX -> реальный id набора
