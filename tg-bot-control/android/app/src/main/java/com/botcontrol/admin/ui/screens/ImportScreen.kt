@@ -67,6 +67,11 @@ fun ImportScreen(
     var source by remember { mutableStateOf("") }
     var parsed by remember { mutableStateOf<ScriptImporter.Parsed?>(null) }
     val checked = remember { mutableStateMapOf<String, Boolean>() }
+    var replaceRules by remember { mutableStateOf(false) }
+    var existingRulesCount by remember { mutableStateOf(0) }
+    var existingPacksCount by remember { mutableStateOf(0) }
+    var existingSchedCount by remember { mutableStateOf(0) }
+    var showGuide by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
 
@@ -79,6 +84,9 @@ fun ImportScreen(
         scope.launch {
             val botId = resolveBotId(localStore)
             val allPacks = localStore.packs()
+            existingRulesCount = repository.botRules(botId).size
+            existingPacksCount = allPacks.count { it.ownerBotId == botId || it.ownerBotId == 0L }
+            existingSchedCount = localStore.schedule(botId).size
             val accessiblePacks = allPacks.filter { it.ownerBotId == botId } +
                 allPacks.filter { it.ownerBotId == 0L }
             val p = ScriptImporter.parse(text, accessiblePacks)
@@ -163,6 +171,18 @@ fun ImportScreen(
                         Spacer(Modifier.height(2.dp))
                     }
                     Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Предпросмотр: сейчас у бота $existingRulesCount правил, $existingPacksCount наборов, $existingSchedCount напоминаний. " +
+                            "Будет применено: ${p.commands.size} команд, ${p.textRules.size} правил, ${p.packs.size} наборов, ${p.schedule.size} событий.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = replaceRules, onCheckedChange = { replaceRules = it })
+                        Text("Заменить существующие правила бота (вместо дозаписи)",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    Spacer(Modifier.height(4.dp))
                     Button(onClick = {
                         scope.launch {
                             val botId = resolveBotId(localStore)
@@ -171,6 +191,7 @@ fun ImportScreen(
                                 repository = repository,
                                 botId = botId,
                                 parsed = p,
+                                replaceExistingRules = replaceRules,
                                 wanted = { key -> checked[key] ?: true },
                             )
                             com.botcontrol.admin.service.BotLog.log(localStore, botId, "📥 Импорт применён: ${result.take(200)}")
@@ -204,6 +225,32 @@ fun ImportScreen(
             modifier = Modifier.fillMaxWidth()) {
             Text("🧹 Очистить")
         }
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = { showGuide = !showGuide }, modifier = Modifier.fillMaxWidth()) {
+            Text(if (showGuide) "▲ Скрыть памятку импорта" else "📖 Что понимает импорт (памятка)")
+        }
+        if (showGuide) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("Поддерживаемые конструкции (Python: telebot / aiogram, JS):",
+                        style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(4.dp))
+                    listOf(
+                        "• Команды и триггеры: @bot.message_handler(commands=...), m.text == '…', 'слово' in m.text.lower(), regexp='…'",
+                        "• Ответы: send_message (HTML / MarkdownV2, disable_web_page_preview, disable_notification, protect_content, reply_to_message_id)",
+                        "• Медиа и опросы: send_sticker / send_animation / send_document / send_video / send_voice / send_audio / send_poll",
+                        "• Inline-меню (до 3 уровней подменю): InlineKeyboardButton с callback_data, url, web_app, copy_text, switch_inline_query_current_chat",
+                        "• Клавиатура чата: ReplyKeyboardMarkup(one_time_keyboard, input_field_placeholder), request_contact, request_location, ReplyKeyboardRemove",
+                        "• Наборы, анимации и кубик: ИМЯ = [...], random.choice(ИМЯ) (в т.ч. из библиотеки бота), play_animation(...), send_dice(...)",
+                        "• Меню Telegram и расписание: bot.set_my_commands(..., scope=..., language_code=...), get_today_schedule(now)",
+                    ).forEach { line ->
+                        Text(line, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.height(2.dp))
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(24.dp))
     }
 }
@@ -224,9 +271,15 @@ private suspend fun applyParsed(
     repository: BotRepository,
     botId: Long,
     parsed: ScriptImporter.Parsed,
+    replaceExistingRules: Boolean = false,
     wanted: (String) -> Boolean,
 ): String {
     val done = ArrayList<String>()
+
+    if (replaceExistingRules && (wanted(ScriptImporter.SEC_COMMANDS) || wanted(ScriptImporter.SEC_RULES))) {
+        repository.deleteBotRules(botId)
+        done.add("старые правила очищены")
+    }
 
     // ---------- наборы ответов (сначала: нужны их id для кнопок) ----------
     val packIdMap = HashMap<String, String>() // imp_XXX -> реальный id набора
@@ -274,7 +327,8 @@ private suspend fun applyParsed(
         val withPack = if (b.packId.startsWith("imp_") || b.packId.startsWith("lib:")) {
             b.copy(packId = packId(b.packId))
         } else b
-        if (withPack.action == "anim") withPack.copy(script = animFixed(withPack.script)) else withPack
+        val withAnim = if (withPack.action == "anim") withPack.copy(script = animFixed(withPack.script)) else withPack
+        if (withAnim.submenu.isNotEmpty()) withAnim.copy(submenu = buttonsFixed(withAnim.submenu)) else withAnim
     }
 
     // ---------- характер и параметры ИИ ----------
@@ -313,20 +367,27 @@ private suspend fun applyParsed(
             "script" -> "script"
             "anim" -> "anim"
             "dice" -> "dice"
+            "media" -> "media"
+            "poll" -> "poll"
             else -> "text"
         }
         val ruleScript = if (action == "anim") animFixed(imp.script) else imp.script
         val ruleText = when (action) {
-            "text" -> imp.text
+            "text", "media" -> imp.text
+            "poll" -> imp.options.pollQuestion.ifBlank { imp.text }
             "dice" -> imp.text.ifBlank { "🎲" } // эмодзи кубика
             else -> ""
         }
         val packForRule = if (action == "pack") packId(imp.packId) else ""
-        if (action == "text" && imp.text.isBlank()) {
+        if ((action == "text" && imp.text.isBlank()) ||
+            (action == "media" && imp.options.mediaRef.isBlank()) ||
+            (action == "poll" && imp.options.pollOptions.size < 2)
+        ) {
             rulesSkipped++
             skippedPatterns.add(imp.pattern.ifBlank { imp.type })
-            continue // пустой текст — фиксируем пропуск в сводке
+            continue // пустой текст/медиа/опрос — фиксируем пропуск в сводке
         }
+        val optsJson = BotJson.save(imp.options)
         // Самоисцеление: ищем уже сохранённое правило ПО ПАТТЕРНУ, не по типу.
         // Старые версии могли сохранить то же правило иначе (другой тип,
         // другой формат), и тогда новый импорт создавал дубль, а старые
@@ -345,6 +406,7 @@ private suspend fun applyParsed(
                 packId = packForRule,
                 script = ruleScript,
                 menu = BotJson.save(menu.withIds()),
+                options = optsJson,
             )
         } else {
             BotRuleEntity(
@@ -356,6 +418,7 @@ private suspend fun applyParsed(
                 packId = packForRule,
                 script = ruleScript,
                 menu = BotJson.save(menu.withIds()),
+                options = optsJson,
             )
         }
         repository.saveBotRule(entity)
@@ -416,6 +479,9 @@ private suspend fun applyParsed(
             done.add("без действия: ${noAction.size}")
             com.botcontrol.admin.service.BotLog.log(localStore, botId, "⚠️ Кнопки клавиатуры без действия: ${noAction.joinToString(", ")}")
         }
+    }
+    if (wanted(ScriptImporter.SEC_KEYBOARD) && (!parsed.keyboardOptions.isDefault || kbLabels.isNotEmpty())) {
+        localStore.setKeyboardOptions(parsed.keyboardOptions, botId)
     }
 
     // ---------- расписание ----------

@@ -296,6 +296,23 @@ class LocalBotStore(context: Context) {
         }
     }
 
+    suspend fun keyboardOptions(botId: Long = -1L): KeyboardOptions {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[kbOptsKey(id)].orEmpty() }.first()
+        return BotJson.keyboardOptions(raw)
+    }
+
+    suspend fun setKeyboardOptions(value: KeyboardOptions, botId: Long = -1L) {
+        val id = resolveId(botId)
+        val clean = value.copy(
+            columns = value.columns.coerceIn(1, 4),
+            placeholder = value.placeholder.take(64),
+            contactButton = value.contactButton.take(32),
+            locationButton = value.locationButton.take(32),
+        )
+        appContext.localBotDataStore.edit { it[kbOptsKey(id)] = BotJson.save(clean) }
+    }
+
     /**
      * Полный сброс настроек бота к заводским: удаляются правила ответов,
      * расписание, клавиатура, характер и параметры ИИ, уточняющие вопросы,
@@ -305,12 +322,17 @@ class LocalBotStore(context: Context) {
     suspend fun resetBot(botId: Long) {
         appContext.localBotDataStore.edit {
             listOf(
-                schedKey(botId), kbKey(botId), promptKey(botId), defaultKey(botId),
+                schedKey(botId), kbKey(botId), kbOptsKey(botId), promptKey(botId), defaultKey(botId),
                 remKey(botId), lastChatKey(botId), menuKey(botId),
                 typingKey(botId), cooldownKey(botId), historyKey(botId),
                 clarOnKey(botId), clarKey(botId), llmKey(botId),
                 aiModelKey(botId), aiTempKey(botId), aiTopKKey(botId), aiMaxTokKey(botId),
                 chanKey(botId), listOnKey(botId), listingsKey(botId), menuSigKey(botId),
+                adminIdsKey(botId), reqChanKey(botId), reqChanLinkKey(botId), reqChanPromptKey(botId),
+                fsmKey(botId), listMaxKey(botId), listAlbumKey(botId),
+                groupModKey(botId), webhookSecretKey(botId),
+                inlineCfgKey(botId), productsKey(botId), ordersKey(botId),
+                webAppCfgKey(botId), integrationsCfgKey(botId),
             ).forEach { key -> it.remove(key) }
         }
     }
@@ -320,6 +342,184 @@ class LocalBotStore(context: Context) {
     private fun chanKey(id: Long) = stringPreferencesKey("channel_$id")
     private fun listOnKey(id: Long) = booleanPreferencesKey("listings_on_$id")
     private fun listingsKey(id: Long) = stringPreferencesKey("listings_$id")
+    private fun listMaxKey(id: Long) = intPreferencesKey("listings_max_$id")
+    private fun listAlbumKey(id: Long) = booleanPreferencesKey("listings_album_$id")
+
+    // ---------- права, роли, обязательный канал, FSM (Этап 2) ----------
+    private fun adminIdsKey(id: Long) = stringPreferencesKey("admin_ids_$id")
+    private fun reqChanKey(id: Long) = stringPreferencesKey("req_channel_$id")
+    private fun reqChanLinkKey(id: Long) = stringPreferencesKey("req_channel_link_$id")
+    private fun reqChanPromptKey(id: Long) = stringPreferencesKey("req_channel_prompt_$id")
+    private fun fsmKey(id: Long) = stringPreferencesKey("fsm_flows_$id")
+    private fun groupModKey(id: Long) = stringPreferencesKey("group_mod_$id")
+    private fun webhookSecretKey(id: Long) = stringPreferencesKey("webhook_secret_$id")
+
+    // ---------- Stage 4: Inline, Telegram Stars, Mini App, HTTP API (per-botId) ----------
+    private fun inlineCfgKey(id: Long) = stringPreferencesKey("inline_cfg_$id")
+    private fun productsKey(id: Long) = stringPreferencesKey("products_$id")
+    private fun ordersKey(id: Long) = stringPreferencesKey("star_orders_$id")
+    private fun webAppCfgKey(id: Long) = stringPreferencesKey("webapp_cfg_$id")
+    private fun integrationsCfgKey(id: Long) = stringPreferencesKey("integrations_cfg_$id")
+
+    suspend fun inlineConfig(botId: Long = -1L): InlineModeConfig {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[inlineCfgKey(id)].orEmpty() }.first()
+        return BotJson.inlineConfig(raw)
+    }
+
+    suspend fun setInlineConfig(value: InlineModeConfig, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[inlineCfgKey(id)] = BotJson.save(value) }
+    }
+
+    suspend fun digitalProducts(botId: Long = -1L): List<DigitalProduct> {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[productsKey(id)].orEmpty() }.first()
+        return BotJson.productList(raw)
+    }
+
+    suspend fun setDigitalProducts(value: List<DigitalProduct>, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[productsKey(id)] = BotJson.save(value.take(50)) }
+    }
+
+    suspend fun starOrders(botId: Long = -1L): List<StarOrder> {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[ordersKey(id)].orEmpty() }.first()
+        return BotJson.orderList(raw)
+    }
+
+    suspend fun addStarOrder(order: StarOrder, botId: Long = -1L) {
+        val id = resolveId(botId)
+        val current = starOrders(id)
+        val next = (listOf(order) + current).take(200)
+        appContext.localBotDataStore.edit { it[ordersKey(id)] = BotJson.save(next) }
+    }
+
+    suspend fun markOrderRefunded(chargeId: String, botId: Long = -1L) {
+        val id = resolveId(botId)
+        val next = starOrders(id).map { if (it.chargeId == chargeId) it.copy(refunded = true) else it }
+        appContext.localBotDataStore.edit { it[ordersKey(id)] = BotJson.save(next) }
+    }
+
+    suspend fun webAppConfig(botId: Long = -1L): WebAppConfig {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[webAppCfgKey(id)].orEmpty() }.first()
+        return BotJson.webAppConfig(raw)
+    }
+
+    suspend fun setWebAppConfig(value: WebAppConfig, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[webAppCfgKey(id)] = BotJson.save(value) }
+    }
+
+    suspend fun integrationsConfig(botId: Long = -1L): IntegrationsConfig {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[integrationsCfgKey(id)].orEmpty() }.first()
+        return BotJson.integrationsConfig(raw)
+    }
+
+    suspend fun setIntegrationsConfig(value: IntegrationsConfig, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[integrationsCfgKey(id)] = BotJson.save(value) }
+    }
+
+    suspend fun adminIdsRaw(botId: Long = -1L): String {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[adminIdsKey(id)].orEmpty() }.first()
+    }
+
+    suspend fun setAdminIdsRaw(value: String, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[adminIdsKey(id)] = value.trim().take(2000) }
+    }
+
+    suspend fun adminIds(botId: Long = -1L): Set<Long> =
+        AccessPolicy.parseAdminIds(adminIdsRaw(botId))
+
+    suspend fun requiredChannel(botId: Long = -1L): String {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[reqChanKey(id)].orEmpty() }.first()
+    }
+
+    suspend fun setRequiredChannel(value: String, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[reqChanKey(id)] = value.trim().take(128) }
+    }
+
+    suspend fun requiredChannelLink(botId: Long = -1L): String {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[reqChanLinkKey(id)].orEmpty() }.first()
+    }
+
+    suspend fun setRequiredChannelLink(value: String, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[reqChanLinkKey(id)] = value.trim().take(256) }
+    }
+
+    suspend fun requiredChannelPrompt(botId: Long = -1L): String {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[reqChanPromptKey(id)].orEmpty() }.first()
+    }
+
+    suspend fun setRequiredChannelPrompt(value: String, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[reqChanPromptKey(id)] = value.trim().take(1000) }
+    }
+
+    suspend fun fsmFlows(botId: Long = -1L): List<FsmFlow> {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[fsmKey(id)].orEmpty() }.first()
+        return BotJson.fsmList(raw)
+    }
+
+    suspend fun setFsmFlows(flows: List<FsmFlow>, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[fsmKey(id)] = BotJson.save(flows) }
+    }
+
+    suspend fun groupModeration(botId: Long = -1L): GroupModerationConfig {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[groupModKey(id)].orEmpty() }.first()
+        return BotJson.groupModeration(raw)
+    }
+
+    suspend fun setGroupModeration(value: GroupModerationConfig, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[groupModKey(id)] = BotJson.save(value) }
+    }
+
+    suspend fun webhookSecret(botId: Long = -1L): String {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[webhookSecretKey(id)].orEmpty() }.first()
+    }
+
+    suspend fun setWebhookSecret(value: String, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[webhookSecretKey(id)] = value.trim().take(256) }
+    }
+
+    /** Макс. активных объявлений на одного пользователя (0 = без лимита). */
+    suspend fun listingMaxPerUser(botId: Long = -1L): Int {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[listMaxKey(id)] ?: 0 }.first()
+    }
+
+    suspend fun setListingMaxPerUser(value: Int, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[listMaxKey(id)] = value.coerceIn(0, 50) }
+    }
+
+    /** Публиковать 2+ фото объявления одним альбомом (sendMediaGroup). */
+    suspend fun listingUseAlbum(botId: Long = -1L): Boolean {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[listAlbumKey(id)] ?: true }.first()
+    }
+
+    suspend fun setListingUseAlbum(value: Boolean, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[listAlbumKey(id)] = value }
+    }
 
     /** Канал публикаций, например «@daromvpl». Пусто = не публиковать. */
     suspend fun channelId(botId: Long = -1L): String {
@@ -481,7 +681,11 @@ class LocalBotStore(context: Context) {
     companion object {
         fun computeMenuSignature(tokenKey: String, commands: List<MenuCommand>): String =
             tokenKey + ":" + commands.filter { it.command.isNotBlank() }
-                .joinToString("|") { "${it.command.trim()}=${it.description.trim()}" }
+                .joinToString("|") {
+                    val base = "${it.command.trim()}=${it.description.trim()}"
+                    if (it.scope.isBlank() && it.languageCode.isBlank()) base
+                    else "$base@${it.scope.trim()}:${it.languageCode.trim()}"
+                }
 
         private const val KEY_BOT_TOKEN = "bot_token"
         private val KEY_MODE = stringPreferencesKey("mode")
@@ -507,6 +711,7 @@ class LocalBotStore(context: Context) {
         // ключи с суффиксом botId
         private fun schedKey(id: Long) = stringPreferencesKey("schedule_$id")
         private fun kbKey(id: Long) = stringPreferencesKey("keyboard_$id")
+        private fun kbOptsKey(id: Long) = stringPreferencesKey("keyboard_opts_$id")
         private fun promptKey(id: Long) = stringPreferencesKey("system_prompt_$id")
         private fun defaultKey(id: Long) = stringPreferencesKey("default_reply_$id")
         private fun remKey(id: Long) = booleanPreferencesKey("reminders_on_$id")

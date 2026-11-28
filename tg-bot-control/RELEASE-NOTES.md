@@ -1,3 +1,105 @@
+# BotControl v2.2.0 (code 43)
+
+## 🔄 Паритет desktop-web (0.7.0), безопасность, диагностика и сквозные тесты
+
+Пятый, завершающий этап дорожной карты `ДОРОЖНАЯ-КАРТА-TELEGRAM.md`:
+
+- **Паритет `desktop-web` (`BotControl.exe 0.7.0`):**
+  - Дисковое хранилище ботов `.bc` с ротацией последних 10 бэкапов (`BotDiskStore`) и мультибот-менеджер (`MultiBotManager`, без хранения токенов на диске).
+  - Полный импорт и экспорт в формат Android `.py` (`import_android_py` / `export_android_py`), триггеры `regex`, `HTML`/`MarkdownV2` с безопасным откатом, `sendDice`, медиа по `file_id`/URL, вложенные inline-меню (`callback_query`), FSM-анкеты, подстановки `{user}/{args}`, тёмная тема и экспорт диагностики (`/api/diagnostics`).
+  - PIN-защита LAN-режима (`--pin`) и исправленный CORS/Origin для `localhost`.
+- **Безопасность и UX Android (`v2.2.0`):**
+  - `res/xml/network_security_config.xml` (запрет глобального cleartext HTTP, разрешение только для `localhost`/`127.0.0.1`/`10.0.2.2`/`.local`).
+  - Автоматический 6-значный PIN-код для Wi-Fi интерфейса файлового сервера `FileServer` (Webhook и Mini App работают без PIN).
+  - Ограничение времени исполнения JS-скриптов в Rhino (2-секундный `ContextFactory` watchdog + лимит размера 64 КБ).
+  - Мастер первого запуска на главном экране, предпросмотр импорта с опцией замены существующих правил и единый отчёт диагностики без токенов в «Общем логе» (`BotDiagnostics`).
+- **Общий мок Telegram API и регрессия:**
+  - Контрактные фикстуры и локальный мок-сервер `tools/shared-telegram-mock/` + единый скрипт полной проверки `tools/verify-release.sh`.
+
+# BotControl v2.1.0 (code 42)
+
+## ⚡ Inline-режим `@bot`, Telegram Stars (`XTR`), Mini Apps, HTTP API и входящие медиа
+
+Четвёртый крупный этап дорожной карты `ДОРОЖНАЯ-КАРТА-TELEGRAM.md` (строго per-`botId`):
+
+- **Inline-режим (`@bot запрос`):**
+  - В `TelegramUpdatesParser` добавлены `inline_query`, `chosen_inline_result` и `pre_checkout_query` (всего 14 типов `allowed_updates`).
+  - Реализованы `answerInlineQuery` и `InlineCatalogMatcher`: карточки из своих описаний, публичных правил, наборов бота и каталога товаров Telegram Stars с прямой кнопкой/ссылкой `/start buy_<id>`.
+- **Платежи и Telegram Stars (`XTR`):**
+  - Методы `sendInvoice`, `createInvoiceLink`, `answerPreCheckoutQuery`, `refundStarPayment` и проверка `PaymentPolicy`.
+  - В `Stage4Engine` и `Stage4Screen`: каталог цифровых товаров, генерация платёжных ссылок, кнопка оплаты `action = "invoice"` в `MenuEditor`, авто-выдача текста/медиа, повышение роли (`vip`/`admin`) и тега в Room, журнал заказов `StarOrder` и возврат Stars в один тап.
+- **Telegram Mini Apps (`web_app`):**
+  - Обработка `web_app_data` (`Stage4Engine`), методы `answerWebAppQuery` и `setChatMenuButtonWebApp` (кнопка меню чата).
+  - Встроенный HTML5-шаблон витрины и формы заявки на `GET /miniapp/<botId>` в `FileServer.kt` (с `Telegram.WebApp.sendData`) и поддержка внешнего HTTPS URL в `Stage4Screen`.
+- **Внешние HTTP API и входящие медиа:**
+  - В JS-песочнице `BotScript` добавлены `http.get(url, headers?)` и `http.post(url, bodyOrObj, headers?)` через `SafeHttpClient`, работающие строго по белому списку доменов `httpAllowedDomains`, плюс вебхуки на оплаты и заявки Mini App.
+  - Входящие фото/документы/голосовые автоматически кэшируются в `bot_<id>/media/in_*` (до 20 МБ) и передаются в JS-скрипты (`e.caption`, `e.mimeType`, `e.fileName`, `e.fileSize`, `e.localPath`), плейсхолдеры и контекст локального ИИ (`BotBrain`).
+
+# BotControl v2.0.0 (code 41)
+
+## 🛡 Группы, каналы, темы форумов, авто-модерация и Webhook-адаптер
+
+Третий крупный этап дорожной карты `ДОРОЖНАЯ-КАРТА-TELEGRAM.md` (строго per-`botId`):
+
+- **Расширенные обновления `getUpdates` и Webhook-адаптер (`TelegramUpdates.kt` + `WebhookQueue`):**
+  - Поддержка всех 11 типов `allowed_updates`: `message`, `edited_message`, `channel_post`, `edited_channel_post`, `callback_query`, `my_chat_member`, `chat_member`, `chat_join_request`, `message_reaction`, `poll`, `poll_answer`.
+  - Опциональный локальный приёмник `POST /telegram-webhook/<botId>` в `FileServer` (с проверкой `X-Telegram-Bot-Api-Secret-Token`) плюс `setWebhook` / `getWebhookInfo` в интерфейсе.
+- **Администрирование и авто-модерация групп (`GroupModerationEngine` + `GroupsScreen`):**
+  - Методы Bot API: `banChatMember`, `unbanChatMember`, `restrictChatMember`, `promoteChatMember`, `approveChatJoinRequest`, `declineChatJoinRequest`, `getChat`, `getChatMemberCount`, `getChatAdministrators`, `createForumTopic`.
+  - Настраиваемые модули на бота: авто-приветствие новых участников (с таймером удаления), кнопка-капча при входе (`restrictChatMember` + таймаут мут/кик), антиспам (стоп-слова, блокировка ссылок и `@упоминаний` с белым списком доменов, антифлуд `FloodTracker`, обход для админов группы), авто-одобрение заявок (`chat_join_request`) и быстрые инструменты управления чатом/участником/темой форума в экране «🛡 Группы, каналы и модерация».
+- **Темы супергрупп (форумы), область правил, реакции и опросы:**
+  - Маршрутизация `message_thread_id` в правилах (`RuleOptions.targetThreadId`), расписании (`ScheduleEvent.threadId`), темах по умолчанию и в ответах/медиа/опросах/`sendDice`/`AnimPlayer`.
+  - Фильтр области чата для правил (`RuleOptions.chatScope`: везде / ЛС / группы / каналы), авто-реакция `RuleOptions.autoReactEmoji` (`setMessageReaction`), реакция бота на `message_reaction` и логирование/ответ на `poll` / `poll_answer`.
+
+# BotControl v1.9.0 (code 40)
+
+## 🧠 Память, пошаговые анкеты (FSM), база подписчиков, роли и массовые рассылки
+
+Второй крупный этап дорожной карты `ДОРОЖНАЯ-КАРТА-TELEGRAM.md` (Room `version = 7`, `MIGRATION_6_7`):
+
+- **База подписчиков (`BotUserEntity` в Room, per-`botId` + экран `UsersScreen`):**
+  - Автоматический учёт пользователей и чатов при каждом сообщении и нажатии кнопки (`chatId`, `userId`, `username`, `firstName`, `chatType`, время первого/последнего визита, счётчик сообщений).
+  - Назначение ролей (`user` / `vip` / `admin`), тегов, ручной бан (игнорирование спамеров) и просмотр/очистка переменных `{переменная}`.
+- **Пошаговые диалоги без кода (`FsmEngine` + экран `FsmScreen`):**
+  - Конструктор анкет, заявок, заказов и квизов: шаги с проверкой типа (`text`, `number`, `phone`, `photo`, `location`, `button`, `any`), ветвление по ответам (`branchMap` и `DONE`), кнопки `⬅️ Назад` (`/back`) и `❌ Отмена` (`/cancel`).
+  - Собранные ответы сохраняются в `{переменные}` пользователя и автоматически отправляются админам и/или в канал (вместе с приложенными фото). Запуск по команде/фразе или по inline-кнопке (`action = "fsm"`).
+- **Персистентное хранилище `db` в JS-скриптах (`BotKvEntity`):**
+  - В песочнице `BotScript` (`ClassShutter { false }`) доступен объект `db`: пользовательские `db.get/set/del/incr/keys` и общие для бота `db.getGlobal/setGlobal/delGlobal/incrGlobal/globalKeys`, сохраняющиеся в SQLite Room между запусками.
+- **Роли, админы и обязательная подписка на канал (`AccessPolicy`):**
+  - Настройка списка Telegram ID администраторов и обязательного канала подписки в `BotSettingsScreen`.
+  - В правилах (`LocalBotScreen`) доступны флаги **«Только для администраторов»**, **«Минимальная роль (VIP+ / Админ)»** и **«Разрешить без проверки подписки»**.
+  - Автоматическая проверка `getChatMemberStatus` с кешем 60 с и кнопками «📢 Подписаться» + «✅ Проверить подписку».
+- **Массовые рассылки и разовые даты (`BroadcastEngine` + `BroadcastScreen`):**
+  - Рассылка по всей активной аудитории или сегментам (роль / тег) с подстановкой `{переменных}`, `parse_mode`, медиа и inline-меню, троттлингом ~22 сообщ./с, паузой по HTTP 429 `retry_after` и автоматической пометкой `403 blocked`.
+  - Одноразовые напоминания/посты по конкретной дате `YYYY-MM-DD` (`ScheduleEvent.onceDate` в `RemindersScreen`) с авто-выключением после срабатывания.
+- **Улучшения «Объявлений» (`ListingEngine`):**
+  - Лимит активных объявлений на пользователя, публикация 2+ фото альбомом (`sendMediaGroup`) + контактная кнопка, смена фото объявления (`lst_editpic_`), удаление админом и уведомление администраторам при удалении.
+
+# BotControl v1.8.0 (code 39)
+
+## 🚀 Ядро Telegram Bot API: форматирование, медиа, опросы, подменю и умные триггеры
+
+Первый крупный этап дорожной карты `ДОРОЖНАЯ-КАРТА-TELEGRAM.md` (Room `version = 6`, `MIGRATION_5_6`):
+
+- **Форматирование и опции доставки (`RuleOptions` + `TelegramApi`):**
+  - Поддержка `parse_mode` (`HTML` / `MarkdownV2`) для правил, кнопок и расписания с автоматическим откатом на обычный текст при ошибке разметки HTTP 400 (`can't parse entities`).
+  - Флаги доставки: «Без превью ссылок» (`link_preview_options`), «Тихое уведомление» (`disable_notification`), «Запретить пересылку/копирование» (`protect_content`), «Ответ с цитатой» (`reply_parameters`), тема форума (`message_thread_id`) и скрытие нижней клавиатуры (`ReplyKeyboardRemove`).
+- **Вложенные inline-меню (`I-4`) и новые типы кнопок:**
+  - Многоуровневые inline-подменю (`submenu` до 3 уровней + автоматическая кнопка `⬅️ Назад` со стеком переходов по `(botId, chatId, messageId)` через `editMessageText` / `editMessageReplyMarkup`).
+  - Новые действия в `MenuEditor`: `web_app` (Telegram Mini App), `copy_text` (кнопка копирования), `switch_inline` (подстановка запроса в чат), `llm` (локальный ИИ по кнопке) и `media` — с полным импортом и обратным экспортом в Python (`ScriptImporter` ↔ `SettingsExporter`).
+- **Медиа-ответы, опросы и расширенный `TelegramApi` (`U-4`):**
+  - Входящий `TgMessage` читает `username`, `userId`, `chatType`, `messageId`, `messageThreadId`, `caption`, `fileId`, `replyToText`, `location` и `contact`.
+  - Исходящие методы Bot API: `sendSticker`, `sendAnimation`, `sendDocument`, `sendVideo`, `sendVoice`, `sendAudio`, `sendPoll`, `sendMediaGroup`, `sendLocation`, `copyMessage`, `forwardMessage`, `setMessageReaction`, `pinChatMessage`, `editMessageReplyMarkup`, `getChatMemberStatus`.
+  - Новые действия правил в `LocalBotScreen`: **«🖼 Медиа»** (по `file_id`, URL или файлу) и **«📊 Опрос»** (`sendPoll`).
+- **Меню команд и клавиатура чата:**
+  - `setMyCommandsScoped`: поддержка `scope` (`default`, `all_private_chats`, `all_group_chats`, `all_chat_administrators`) и `language_code` в `BotSettingsScreen` и при импорте/экспорте.
+  - Настройка раскладки Reply-клавиатуры (`KeyboardOptions` в `ButtonsScreen`): количество колонок (`1..4`), `one_time_keyboard`, `input_field_placeholder`, спец-кнопки запроса телефона (`request_contact`) и геолокации (`request_location`).
+- **Умные триггеры, плейсхолдеры и планировщик (`U-2`, `U-3`, `U-6`):**
+  - Триггер `regex` (с живой проверкой синтаксиса) и опция пословного совпадения `wholeWord` (`\p{L}\p{N}_`).
+  - Расширенные плейсхолдеры `{user}`, `{username}`, `{user_id}`, `{chat_id}`, `{args}`, `{arg1..3}`, `{bot}`, `{date}`, `{time}` и новые поля JS-скриптов `handle(e)` (`e.username`, `e.userId`, `e.chatType`, `e.args`, `e.messageId`, `e.replyToText`, `e.kind`, `e.fileId`).
+  - `ShuffleBag` (`U-2`: перебор набора без повторов до исчерпания) в `PackEditScreen` и `ScheduleJitter` (`U-3`: случайный разброс `±N` мин) + `threadId` / `parseMode` в `RemindersScreen`.
+  - Встроенная памятка поддерживаемых конструкций импорта (`U-6`) в `ImportScreen` и обновлённые промты/гайды (`PromptScreen`, `ГАЙД-СОЗДАНИЕ-БОТА-LLM.md`, `Промт-создание-ботов.md`, `Инструкция-код-бота.md`).
+
 # BotControl v1.7.5 (code 38)
 
 ## 🧩 Исправления импорта, расписания, диагностики и документации для LLM-ботов

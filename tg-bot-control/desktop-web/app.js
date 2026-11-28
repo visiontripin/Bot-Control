@@ -1,76 +1,293 @@
 'use strict';
 const KEY = 'botcontrol-editor-v1';
+const THEME_KEY = 'botcontrol-theme';
 const PRESETS = {spinner:'⠋ Спиннер',progress:'▰ Прогресс-бар',dots:'… Точки',countdown:'⏳ Отсчёт',typewriter:'⌨ Печатная машинка',matrix:'🟩 Матрица',slot:'🎰 Слот-машина',moon:'🌕 Фазы луны',clock:'🕐 Часы',heart:'❤️ Сердце',custom:'🎞 Свои кадры'};
+const DICE_EMOJIS = ['🎲','🎯','🏀','⚽','🎳','🎰'];
+const MEDIA_TYPES = {photo:'Фото',sticker:'Стикер',animation:'GIF / Анимация',document:'Документ',video:'Видео',voice:'Голосовое',audio:'Аудио'};
 const newAnim = () => ({preset:'spinner',text:'Загрузка',interval:700,loops:1,count:5,final:'',frames:''});
 function validAnim(a) { return a && typeof a === 'object' && Object.hasOwn(PRESETS,a.preset) && ['text','final','frames'].every(k=>typeof a[k] === 'string' && a[k].length <= 20000) && [['interval',500,3000],['loops',1,10],['count',1,30]].every(([k,min,max])=>Number.isInteger(a[k]) && a[k]>=min && a[k]<=max); }
-function download(data,name){const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob),a=element('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+function download(data,name){const blob=new Blob([typeof data === 'string' ? data : JSON.stringify(data,null,2)],{type: typeof data === 'string' ? 'text/plain;charset=utf-8' : 'application/json'});const url=URL.createObjectURL(blob),a=element('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 
 const $ = id => document.getElementById(id);
-const fresh = () => ({format:'botcontrol',version:1,name:'Мой бот',scenarios:[],buttons:[]});
+const fresh = () => ({format:'botcontrol',version:1,name:'Мой бот',scenarios:[],buttons:[],schedule:[]});
 const id = () => { const bytes = new Uint8Array(16); crypto.getRandomValues(bytes); return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join(''); };
 function validate(x) {
   if (!x || x.format !== 'botcontrol' || x.version !== 1 || typeof x.name !== 'string' || !Array.isArray(x.scenarios) || !Array.isArray(x.buttons)) throw Error('Неподдерживаемый или повреждённый файл .bc.');
   const ids = new Set();
-  for (const s of x.scenarios) { if (!s || typeof s.id !== 'string' || !s.id || ids.has(s.id) || typeof s.name !== 'string' || typeof s.text !== 'string' || (s.animation != null && !validAnim(s.animation)) || (s.links != null && (!Array.isArray(s.links) || s.links.length > 3 || s.links.some(x=>!x || typeof x.label !== 'string' || typeof x.url !== 'string'))) || (s.replies != null && (!Array.isArray(s.replies) || s.replies.length > 500 || s.replies.some(x=>typeof x !== 'string' || x.length > 4096))) || (s.trigger != null && (typeof s.trigger !== 'object' || !['command','contains'].includes(s.trigger.type) || typeof s.trigger.value !== 'string' || s.trigger.value.length > 200))) throw Error('Некорректный список сценариев.'); ids.add(s.id); }
+  for (const s of x.scenarios) {
+    if (!s || typeof s.id !== 'string' || !s.id || ids.has(s.id) || typeof s.name !== 'string' || typeof s.text !== 'string' ||
+      (s.animation != null && !validAnim(s.animation)) ||
+      (s.links != null && (!Array.isArray(s.links) || s.links.length > 3 || s.links.some(l=>!l || typeof l.label !== 'string' || typeof l.url !== 'string'))) ||
+      (s.replies != null && (!Array.isArray(s.replies) || s.replies.length > 500 || s.replies.some(r=>typeof r !== 'string' || r.length > 4096))) ||
+      (s.trigger != null && (typeof s.trigger !== 'object' || !['command','contains','regex'].includes(s.trigger.type) || typeof s.trigger.value !== 'string' || s.trigger.value.length > 200)))
+      throw Error('Некорректный список сценариев.');
+    ids.add(s.id);
+  }
   const buttonIds = new Set();
   for (const b of x.buttons) { if (!b || typeof b.id !== 'string' || !b.id || buttonIds.has(b.id) || typeof b.label !== 'string' || typeof b.scenarioId !== 'string' || (b.scenarioId && !ids.has(b.scenarioId))) throw Error('Некорректный список кнопок или привязка сценария.'); buttonIds.add(b.id); }
   if (x.schedule != null && (!Array.isArray(x.schedule) || x.schedule.length > 100 || x.schedule.some(e=>!e || typeof e.id !== 'string' || typeof e.time !== 'string' || typeof e.chatId !== 'string' || !Array.isArray(e.days) || e.days.some(d=>!Number.isInteger(d)||d<0||d>6) || typeof e.scenarioId !== 'string' || (e.scenarioId && !ids.has(e.scenarioId))))) throw Error('Некорректное расписание.');
   return x;
 }
+
+let activeBotId = 'default';
+let diskBots = [];
 let bot = fresh();
 try { const stored = localStorage.getItem(KEY); if (stored) bot = validate(JSON.parse(stored)); } catch(e) { $('notice').textContent = 'Не удалось прочитать сохранённые данные. Импортируйте резервную копию .bc.'; }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(bot)); } catch(e) { $('notice').textContent = 'Не удалось сохранить изменения в браузере. Экспортируйте резервную копию.'; } }
 function element(tag, cls, text) { const e = document.createElement(tag); if(cls)e.className=cls; if(text !== undefined)e.textContent=text; return e; }
 function field(label, value, placeholder, callback) { const wrap=element('div'); const l=element('label','',label); const input=element('input'); input.value=value; input.placeholder=placeholder; input.addEventListener('input',()=>callback(input.value)); l.appendChild(input); wrap.appendChild(l); return wrap; }
-function render() {
- $('botName').value=bot.name;
- const scenarios=$('scenarios'); scenarios.replaceChildren();
- if(!bot.scenarios.length) scenarios.appendChild(element('div','empty','Пока нет сценариев. Добавьте первый или импортируйте заготовки.'));
- bot.scenarios.forEach(s=>{ const card=element('div','item'), row=element('div','row');
- row.appendChild(field('Название сценария',s.name,'Например, Приветствие',v=>{s.name=v;save(); updateSelects(); updateScheduleSelects();}));
- row.appendChild(element('div')); const del=element('button','delete','Удалить'); del.onclick=()=>{if(!confirm('Удалить сценарий? Привязанные кнопки останутся без сценария.'))return; bot.scenarios=bot.scenarios.filter(x=>x.id!==s.id); bot.buttons.forEach(b=>{if(b.scenarioId===s.id)b.scenarioId='';});(bot.schedule||[]).forEach(e=>{if(e.scenarioId===s.id)e.scenarioId='';});save();render();}; row.appendChild(del); card.appendChild(row);
- const triggerLabel=element('label','','Когда срабатывает сценарий'),triggerSelect=element('select');[['none','Только по кнопке'],['command','Команда Telegram'],['contains','Сообщение содержит фразу']].forEach(([value,title])=>{const opt=element('option','',title);opt.value=value;triggerSelect.appendChild(opt);});triggerSelect.value=s.trigger?.type || 'none';triggerSelect.onchange=()=>{if(triggerSelect.value==='none')delete s.trigger;else s.trigger={type:triggerSelect.value,value:''};save();render();};triggerLabel.appendChild(triggerSelect);card.appendChild(triggerLabel);
- if(s.trigger){card.appendChild(field(s.trigger.type==='command'?'Команда, например /help':'Слово или фраза',s.trigger.value,s.trigger.type==='command'?'/help':'например, привет',v=>{s.trigger.value=v;save();}));card.appendChild(element('p','hint','Сценарий также можно привязать к кнопке.'));}
- const kindWrap=element('label','','Действие сценария'),kind=element('select'); [['text','Текстовый ответ'],['pack','Случайный ответ из набора'],['animation','Анимация']].forEach(([value,title])=>{const opt=element('option','',title);opt.value=value;kind.appendChild(opt);});kind.value=s.animation?'animation':s.replies?'pack':'text';kind.onchange=()=>{delete s.animation;delete s.replies;if(kind.value==='animation')s.animation=newAnim();if(kind.value==='pack')s.replies=[];save();render();};kindWrap.appendChild(kind);card.appendChild(kindWrap);
- if(s.replies){const label=element('label','','Варианты ответа — каждый с новой строки'),text=element('textarea');text.value=s.replies.join('\n');text.placeholder='Первый ответ\nВторой ответ';text.oninput=()=>{s.replies=text.value.split('\n').filter(x=>x.trim());save();};label.appendChild(text);card.appendChild(label);}else if(!s.animation){const text=element('textarea'); text.value=s.text; text.placeholder='Текст ответа'; text.setAttribute('aria-label','Текст ответа сценария'); text.oninput=()=>{s.text=text.value;save();};card.appendChild(text);}else{
- const a=s.animation, presetLabel=element('label','','Шаблон из Android'),preset=element('select'); Object.entries(PRESETS).forEach(([value,title])=>{const opt=element('option','',title);opt.value=value;preset.appendChild(opt);});preset.value=a.preset;preset.onchange=()=>{a.preset=preset.value;save();render();};presetLabel.appendChild(preset);card.appendChild(presetLabel);
- card.appendChild(field('Подпись ({user} — имя пользователя)',a.text,'Текст',v=>{a.text=v;save();}));
- if(a.preset==='custom'){const label=element('label','','Кадры: разделяйте строкой ---'),frames=element('textarea');frames.value=a.frames;frames.placeholder='Первый кадр\n---\nВторой кадр';frames.oninput=()=>{a.frames=frames.value;save();};label.appendChild(frames);card.appendChild(label);}
- const numbers=element('div','row');[['interval','Пауза, мс (500–3000)',500,3000],['loops','Повторы (1–10)',1,10],['count','Отсчёт (1–30)',1,30]].forEach(([key,title,min,max])=>{const l=element('label','',title),input=element('input');input.type='number';input.min=min;input.max=max;input.value=a[key];input.onchange=()=>{a[key]=Math.min(max,Math.max(min,Math.round(Number(input.value)||min)));input.value=a[key];save();};l.appendChild(input);numbers.appendChild(l);});card.appendChild(numbers);
- card.appendChild(field('Итог после анимации',a.final,'Необязательно',v=>{a.final=v;save();}));const exp=element('button','','Экспорт анимации .bca');exp.onclick=()=>download({format:'botcontrol-animation',version:1,animation:a},'animation.bca');card.appendChild(exp);
- }
- const linkHeader=element('h3','','Ссылки под сообщением (до 3)');card.appendChild(linkHeader);(s.links||[]).forEach((link,index)=>{const wrap=element('div','item');wrap.appendChild(field('Надпись ссылки',link.label,'Открыть сайт',v=>{link.label=v;save();}));wrap.appendChild(field('Адрес http или https',link.url,'https://example.com',v=>{link.url=v;save();}));const delLink=element('button','delete','Удалить ссылку');delLink.onclick=()=>{s.links.splice(index,1);save();render();};wrap.appendChild(delLink);card.appendChild(wrap);});if((s.links||[]).length<3){const add=element('button','','＋ Ссылка под сообщением');add.onclick=()=>{if(!s.links)s.links=[];s.links.push({label:'',url:''});save();render();};card.appendChild(add);}scenarios.appendChild(card); });
- const buttons=$('buttons');buttons.replaceChildren();
- if(!bot.buttons.length) buttons.appendChild(element('div','empty','Пока нет кнопок. Добавьте кнопку и привяжите сценарий.'));
- bot.buttons.forEach(b=>{const card=element('div','item'),row=element('div','row');row.appendChild(field('Надпись кнопки',b.label,'Например, Начать',v=>{b.label=v;save();}));const wrap=element('div'),label=element('label','','Сценарий'),select=element('select'); select.dataset.buttonId=b.id; select.onchange=()=>{b.scenarioId=select.value;save();};label.appendChild(select);wrap.appendChild(label);row.appendChild(wrap);const del=element('button','delete','Удалить');del.onclick=()=>{if(!confirm('Удалить кнопку?'))return;bot.buttons=bot.buttons.filter(x=>x.id!==b.id);save();render();};row.appendChild(del);card.appendChild(row);buttons.appendChild(card);}); updateSelects();
- const schedule=$('schedule');schedule.replaceChildren();if(!(bot.schedule||[]).length)schedule.appendChild(element('div','empty','Напоминаний пока нет.'));
- (bot.schedule||[]).forEach(ev=>{const card=element('div','item');card.appendChild(field('Время ЧЧ:ММ',ev.time,'08:55',v=>{ev.time=v;save();}));card.appendChild(field('Числовой chat ID',ev.chatId,'Например, 123456789',v=>{ev.chatId=v;save();}));const l=element('label','','Сценарий'),select=element('select');select.dataset.scheduleId=ev.id;select.onchange=()=>{ev.scenarioId=select.value;save();};l.appendChild(select);card.appendChild(l);const days=element('div','actions');['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].forEach((day,i)=>{const label=element('label'),checkbox=element('input');checkbox.type='checkbox';checkbox.style.width='auto';checkbox.checked=ev.days.includes(i);checkbox.onchange=()=>{ev.days=checkbox.checked?[...ev.days,i]:ev.days.filter(d=>d!==i);save();};label.append(checkbox,document.createTextNode(' '+day));days.appendChild(label);});card.appendChild(days);const del=element('button','delete','Удалить напоминание');del.onclick=()=>{if(!confirm('Удалить напоминание?'))return;bot.schedule=bot.schedule.filter(x=>x.id!==ev.id);save();render();};card.appendChild(del);schedule.appendChild(card);}); updateScheduleSelects();
+
+function applyTheme(dark) {
+  document.body.classList.toggle('dark', dark);
+  $('themeToggle').textContent = dark ? '☀️ Светлая тема' : '🌙 Тема';
+  try { localStorage.setItem(THEME_KEY, dark ? 'dark' : 'light'); } catch(_) {}
 }
+applyTheme(localStorage.getItem(THEME_KEY) === 'dark');
+$('themeToggle').onclick = () => applyTheme(!document.body.classList.contains('dark'));
+
+function renderBotSelect() {
+  const sel = $('botSelect');
+  sel.replaceChildren();
+  const list = diskBots.length ? diskBots : [{botId: activeBotId, name: bot.name || 'Текущий бот (не сохранён)'}];
+  if (!list.some(x => x.botId === activeBotId)) {
+    list.unshift({botId: activeBotId, name: bot.name || activeBotId});
+  }
+  list.forEach(item => {
+    const opt = element('option', '', `${item.name} [${item.botId}]`);
+    opt.value = item.botId;
+    sel.appendChild(opt);
+  });
+  sel.value = activeBotId;
+}
+
+$('botSelect').onchange = () => {
+  const chosenId = $('botSelect').value;
+  const found = diskBots.find(b => b.botId === chosenId);
+  activeBotId = chosenId;
+  if (found && found.bot) {
+    bot = validate(found.bot);
+    save();
+    render();
+  }
+  status();
+};
+
+function render() {
+  $('botName').value=bot.name;
+  renderBotSelect();
+  const scenarios=$('scenarios'); scenarios.replaceChildren();
+  if(!bot.scenarios.length) scenarios.appendChild(element('div','empty','Пока нет сценариев. Добавьте первый или импортируйте заготовки.'));
+  bot.scenarios.forEach(s=>{
+    const card=element('div','item'), row=element('div','row');
+    row.appendChild(field('Название сценария',s.name,'Например, Приветствие',v=>{s.name=v;save(); updateSelects(); updateScheduleSelects();}));
+    row.appendChild(element('div')); const del=element('button','delete','Удалить'); del.onclick=()=>{if(!confirm('Удалить сценарий? Привязанные кнопки останутся без сценария.'))return; bot.scenarios=bot.scenarios.filter(x=>x.id!==s.id); bot.buttons.forEach(b=>{if(b.scenarioId===s.id)b.scenarioId='';});(bot.schedule||[]).forEach(e=>{if(e.scenarioId===s.id)e.scenarioId='';});save();render();}; row.appendChild(del); card.appendChild(row);
+
+    const triggerLabel=element('label','','Когда срабатывает сценарий'),triggerSelect=element('select');
+    [['none','Только по кнопке'],['command','Команда Telegram'],['contains','Сообщение содержит фразу'],['regex','Регулярное выражение (regex)']].forEach(([value,title])=>{const opt=element('option','',title);opt.value=value;triggerSelect.appendChild(opt);});
+    triggerSelect.value=s.trigger?.type || 'none';
+    triggerSelect.onchange=()=>{if(triggerSelect.value==='none')delete s.trigger;else s.trigger={type:triggerSelect.value,value:''};save();render();};
+    triggerLabel.appendChild(triggerSelect);card.appendChild(triggerLabel);
+    if(s.trigger){
+      const ph = s.trigger.type==='command'?'/help':(s.trigger.type==='regex'?'^заказ\\s+\\d+$':'например, привет');
+      const lbl = s.trigger.type==='command'?'Команда, например /help':(s.trigger.type==='regex'?'Regex-шаблон (без учёта регистра)':'Слово или фраза');
+      card.appendChild(field(lbl,s.trigger.value,ph,v=>{s.trigger.value=v;save();}));
+      card.appendChild(element('p','hint','Сценарий также можно привязать к кнопке.'));
+    }
+
+    const kindWrap=element('label','','Действие сценария'),kind=element('select');
+    [['text','Текстовый ответ'],['pack','Случайный ответ из набора'],['animation','Анимация'],['dice','Кубик / бросок эмодзи'],['media','Медиа (file_id или URL)']].forEach(([value,title])=>{const opt=element('option','',title);opt.value=value;kind.appendChild(opt);});
+    kind.value=s.animation?'animation':s.replies?'pack':s.diceEmoji?'dice':s.media?'media':'text';
+    kind.onchange=()=>{
+      delete s.animation;delete s.replies;delete s.diceEmoji;delete s.media;
+      if(kind.value==='animation')s.animation=newAnim();
+      if(kind.value==='pack')s.replies=[];
+      if(kind.value==='dice')s.diceEmoji='🎲';
+      if(kind.value==='media')s.media={type:'photo',ref:''};
+      save();render();
+    };
+    kindWrap.appendChild(kind);card.appendChild(kindWrap);
+
+    if(s.replies){
+      const label=element('label','','Варианты ответа — каждый с новой строки'),text=element('textarea');text.value=s.replies.join('\n');text.placeholder='Первый ответ\nВторой ответ';text.oninput=()=>{s.replies=text.value.split('\n').filter(x=>x.trim());save();};label.appendChild(text);card.appendChild(label);
+    }else if(s.diceEmoji){
+      const dl=element('label','','Эмодзи кубика'),ds=element('select');
+      DICE_EMOJIS.forEach(em=>{const o=element('option','',em);o.value=em;ds.appendChild(o);});
+      ds.value=s.diceEmoji; ds.onchange=()=>{s.diceEmoji=ds.value;save();};dl.appendChild(ds);card.appendChild(dl);
+    }else if(s.media){
+      const ml=element('label','','Тип медиа'),ms=element('select');
+      Object.entries(MEDIA_TYPES).forEach(([k,t])=>{const o=element('option','',t);o.value=k;ms.appendChild(o);});
+      ms.value=s.media.type; ms.onchange=()=>{s.media.type=ms.value;save();};ml.appendChild(ms);card.appendChild(ml);
+      card.appendChild(field('Telegram file_id или https:// URL',s.media.ref,'https://... или AgAC...',v=>{s.media.ref=v;save();}));
+      card.appendChild(field('Подпись (необязательно)',s.text,'Текст под медиа',v=>{s.text=v;save();}));
+    }else if(!s.animation){
+      const text=element('textarea'); text.value=s.text; text.placeholder='Текст ответа ({user}, {args}, ...)'; text.setAttribute('aria-label','Текст ответа сценария'); text.oninput=()=>{s.text=text.value;save();};card.appendChild(text);
+    }else{
+      const a=s.animation, presetLabel=element('label','','Шаблон из Android'),preset=element('select'); Object.entries(PRESETS).forEach(([value,title])=>{const opt=element('option','',title);opt.value=value;preset.appendChild(opt);});preset.value=a.preset;preset.onchange=()=>{a.preset=preset.value;save();render();};presetLabel.appendChild(preset);card.appendChild(presetLabel);
+      card.appendChild(field('Подпись ({user} — имя пользователя)',a.text,'Текст',v=>{a.text=v;save();}));
+      if(a.preset==='custom'){const label=element('label','','Кадры: разделяйте строкой ---'),frames=element('textarea');frames.value=a.frames;frames.placeholder='Первый кадр\n---\nВторой кадр';frames.oninput=()=>{a.frames=frames.value;save();};label.appendChild(frames);card.appendChild(label);}
+      const numbers=element('div','row');[['interval','Пауза, мс (500–3000)',500,3000],['loops','Повторы (1–10)',1,10],['count','Отсчёт (1–30)',1,30]].forEach(([key,title,min,max])=>{const l=element('label','',title),input=element('input');input.type='number';input.min=min;input.max=max;input.value=a[key];input.onchange=()=>{a[key]=Math.min(max,Math.max(min,Math.round(Number(input.value)||min)));input.value=a[key];save();};l.appendChild(input);numbers.appendChild(l);});card.appendChild(numbers);
+      card.appendChild(field('Итог после анимации',a.final,'Необязательно',v=>{a.final=v;save();}));const exp=element('button','','Экспорт анимации .bca');exp.onclick=()=>download({format:'botcontrol-animation',version:1,animation:a},'animation.bca');card.appendChild(exp);
+    }
+
+    if(!s.animation && !s.diceEmoji){
+      const pmLabel=element('label','','Форматирование текста (parseMode)'),pmSel=element('select');
+      [['','Обычный текст'],['HTML','HTML (<b>жирный</b>, <i>курсив</i>)'],['MarkdownV2','MarkdownV2']].forEach(([v,t])=>{const o=element('option','',t);o.value=v;pmSel.appendChild(o);});
+      pmSel.value=s.parseMode || '';pmSel.onchange=()=>{if(pmSel.value)s.parseMode=pmSel.value;else delete s.parseMode;save();};pmLabel.appendChild(pmSel);card.appendChild(pmLabel);
+    }
+
+    const linkHeader=element('h3','','Ссылки под сообщением (до 3)');card.appendChild(linkHeader);
+    (s.links||[]).forEach((link,index)=>{const wrap=element('div','item');wrap.appendChild(field('Надпись ссылки',link.label,'Открыть сайт',v=>{link.label=v;save();}));wrap.appendChild(field('Адрес http или https',link.url,'https://example.com',v=>{link.url=v;save();}));const delLink=element('button','delete','Удалить ссылку');delLink.onclick=()=>{s.links.splice(index,1);save();render();};wrap.appendChild(delLink);card.appendChild(wrap);});
+    if((s.links||[]).length<3){const add=element('button','','＋ Ссылка под сообщением');add.onclick=()=>{if(!s.links)s.links=[];s.links.push({label:'',url:''});save();render();};card.appendChild(add);}
+
+    const ibHeader=element('h3','','Интерактивные inline-кнопки (callback_query)');card.appendChild(ibHeader);
+    (s.inlineButtons||[]).forEach((ib,idx)=>{
+      const wrap=element('div','item');
+      wrap.appendChild(field('Надпись кнопки',ib.label,'Подробнее',v=>{ib.label=v;save();}));
+      const actL=element('label','','Действие'),actS=element('select');
+      [['text','Ответ сообщением'],['dice','Бросить кубик'],['copy_text','Скопировать текст'],['url','Открыть URL']].forEach(([v,t])=>{const o=element('option','',t);o.value=v;actS.appendChild(o);});
+      actS.value=ib.action || 'text'; actS.onchange=()=>{ib.action=actS.value;save();render();};actL.appendChild(actS);wrap.appendChild(actL);
+      if(ib.action==='url'){wrap.appendChild(field('URL',ib.url||'','https://example.com',v=>{ib.url=v;save();}));}
+      else if(ib.action==='dice'){wrap.appendChild(field('Эмодзи кубика',ib.diceEmoji||'🎲','🎲',v=>{ib.diceEmoji=v;save();}));}
+      else{wrap.appendChild(field(ib.action==='copy_text'?'Текст для копирования':'Текст ответа',ib.text||'','Ответ при нажатии',v=>{ib.text=v;save();}));}
+      wrap.appendChild(field('Всплывающий toast (необязательно)',ib.toast||'','Готово!',v=>{ib.toast=v;save();}));
+      const delIb=element('button','delete','Удалить кнопку');delIb.onclick=()=>{s.inlineButtons.splice(idx,1);save();render();};wrap.appendChild(delIb);card.appendChild(wrap);
+    });
+    const addIb=element('button','','＋ Inline-кнопка');
+    addIb.onclick=()=>{if(!s.inlineButtons)s.inlineButtons=[];s.inlineButtons.push({id:id().slice(0,8),label:'',action:'text',text:'',toast:''});save();render();};
+    card.appendChild(addIb);
+    scenarios.appendChild(card);
+  });
+
+  const buttons=$('buttons');buttons.replaceChildren();
+  if(!bot.buttons.length) buttons.appendChild(element('div','empty','Пока нет кнопок. Добавьте кнопку и привяжите сценарий.'));
+  bot.buttons.forEach(b=>{const card=element('div','item'),row=element('div','row');row.appendChild(field('Надпись кнопки',b.label,'Например, Начать',v=>{b.label=v;save();}));const wrap=element('div'),label=element('label','','Сценарий'),select=element('select'); select.dataset.buttonId=b.id; select.onchange=()=>{b.scenarioId=select.value;save();};label.appendChild(select);wrap.appendChild(label);row.appendChild(wrap);const del=element('button','delete','Удалить');del.onclick=()=>{if(!confirm('Удалить кнопку?'))return;bot.buttons=bot.buttons.filter(x=>x.id!==b.id);save();render();};row.appendChild(del);card.appendChild(row);buttons.appendChild(card);}); updateSelects();
+
+  const schedule=$('schedule');schedule.replaceChildren();if(!(bot.schedule||[]).length)schedule.appendChild(element('div','empty','Напоминаний пока нет.'));
+  (bot.schedule||[]).forEach(ev=>{const card=element('div','item');card.appendChild(field('Время ЧЧ:ММ',ev.time,'08:55',v=>{ev.time=v;save();}));card.appendChild(field('Числовой chat ID',ev.chatId,'Например, 123456789',v=>{ev.chatId=v;save();}));const l=element('label','','Сценарий'),select=element('select');select.dataset.scheduleId=ev.id;select.onchange=()=>{ev.scenarioId=select.value;save();};l.appendChild(select);card.appendChild(l);const days=element('div','actions');['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].forEach((day,i)=>{const label=element('label'),checkbox=element('input');checkbox.type='checkbox';checkbox.style.width='auto';checkbox.checked=ev.days.includes(i);checkbox.onchange=()=>{ev.days=checkbox.checked?[...ev.days,i]:ev.days.filter(d=>d!==i);save();};label.append(checkbox,document.createTextNode(' '+day));days.appendChild(label);});card.appendChild(days);const del=element('button','delete','Удалить напоминание');del.onclick=()=>{if(!confirm('Удалить напоминание?'))return;bot.schedule=bot.schedule.filter(x=>x.id!==ev.id);save();render();};card.appendChild(del);schedule.appendChild(card);}); updateScheduleSelects();
+}
+
 function updateSelects(){document.querySelectorAll('select[data-button-id]').forEach(sel=>{const b=bot.buttons.find(x=>x.id===sel.dataset.buttonId);sel.replaceChildren();const blank=element('option','','Выберите сценарий');blank.value='';sel.appendChild(blank);bot.scenarios.forEach(s=>{const opt=element('option','',s.name || 'Без названия');opt.value=s.id;sel.appendChild(opt);});sel.value=b.scenarioId;});}
 function updateScheduleSelects(){document.querySelectorAll('select[data-schedule-id]').forEach(sel=>{const ev=(bot.schedule||[]).find(x=>x.id===sel.dataset.scheduleId);sel.replaceChildren();const blank=element('option','','Выберите сценарий');blank.value='';sel.appendChild(blank);bot.scenarios.forEach(s=>{const opt=element('option','',s.name || 'Без названия');opt.value=s.id;sel.appendChild(opt);});sel.value=ev.scenarioId;});}
+
 $('addSchedule').onclick=()=>{if(!bot.schedule)bot.schedule=[];bot.schedule.push({id:id(),time:'09:00',chatId:'',days:[0,1,2,3,4],scenarioId:''});save();render();};
-$('botName').oninput=e=>{bot.name=e.target.value;save();};
+$('botName').oninput=e=>{bot.name=e.target.value;save();renderBotSelect();};
 $('addScenario').onclick=()=>{bot.scenarios.push({id:id(),name:'Новый сценарий',text:''});save();render();};
 $('addButton').onclick=()=>{bot.buttons.push({id:id(),label:'',scenarioId:''});save();render();};
 $('importBot').onclick=()=>$('botFile').click();$('importAnswers').onclick=()=>$('answersFile').click();
 $('exportBot').onclick=()=>download(bot,'botcontrol-bot.bc');
 $('importAnimation').onclick=()=>$('animationFile').click();
+
+$('exportPython').onclick = async () => {
+  try {
+    const res = await fetch('/api/export-python', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bot})});
+    const data = await res.json();
+    if (!res.ok) throw Error(data.error || 'Ошибка экспорта');
+    download(data.source, 'botcontrol-android.py');
+    $('notice').textContent = 'Файл .py сохранён (готов для импорта в Android BotControl).';
+  } catch (e) { $('notice').textContent = 'Ошибка экспорта .py: ' + e.message; }
+};
+
+$('diagnosticsBtn').onclick = async () => {
+  try {
+    const res = await fetch('/api/diagnostics');
+    const data = await res.json();
+    download(data, 'botcontrol-diagnostics.json');
+    $('notice').textContent = 'Диагностика сохранена (без токенов и переписок).';
+  } catch (e) { $('notice').textContent = 'Не удалось собрать диагностику.'; }
+};
+
+$('newDiskBot').onclick = () => {
+  activeBotId = 'bot_' + id().slice(0, 8);
+  bot = fresh();
+  bot.name = 'Новый бот';
+  save();
+  render();
+  $('notice').textContent = `Создан черновик ${activeBotId}. Добавьте сценарии и нажмите «Сохранить на диск».`;
+};
+
+$('saveDiskBot').onclick = async () => {
+  try {
+    const res = await fetch('/api/bots/save', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({botId: activeBotId, bot})});
+    const data = await res.json();
+    if (!res.ok) throw Error(data.error || 'Ошибка сохранения');
+    diskBots = data.bots || [];
+    renderBotSelect();
+    $('notice').textContent = `Бот «${bot.name}» сохранён на диск (.bc + автобэкап).`;
+  } catch (e) { $('notice').textContent = 'Ошибка сохранения на диск: ' + e.message; }
+};
+
+$('deleteDiskBot').onclick = async () => {
+  if (!confirm(`Удалить «${bot.name}» (${activeBotId}) с диска?`)) return;
+  try {
+    const res = await fetch('/api/bots/delete', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({botId: activeBotId})});
+    const data = await res.json();
+    if (!res.ok) throw Error(data.error || 'Ошибка удаления');
+    diskBots = data.bots || [];
+    activeBotId = diskBots[0]?.botId || 'default';
+    if (diskBots[0]?.bot) { bot = validate(diskBots[0].bot); save(); }
+    render();
+    $('notice').textContent = 'Бот удалён с диска.';
+  } catch (e) { $('notice').textContent = e.message; }
+};
+
 $('animationFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;try{if(f.size>1024*1024)throw Error('Файл слишком большой.');const x=JSON.parse(await f.text());if(x.format!=='botcontrol-animation'||x.version!==1||!validAnim(x.animation))throw Error('Неподдерживаемый файл анимации.');bot.scenarios.push({id:id(),name:'Импортированная анимация',text:'',animation:x.animation});save();render();$('notice').textContent='Анимация добавлена в сценарии.';}catch(err){$('notice').textContent='Ошибка импорта: '+err.message;}};
 $('botFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;try{if(f.size>5*1024*1024)throw Error('Файл слишком большой (максимум 5 МБ).');const data=validate(JSON.parse(await f.text()));if(!confirm('Импорт заменит текущего бота в редакторе. Продолжить?'))return;bot=data;save();render();$('notice').textContent='Бот импортирован.';}catch(err){$('notice').textContent='Ошибка импорта: '+err.message;}};
 $('answersFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;try{if(f.size>5*1024*1024)throw Error('Файл слишком большой (максимум 5 МБ).');const text=(await f.text()).replace(/^\uFEFF/,'').replace(/\r\n?/g,'\n');const matches=[...text.matchAll(/^\s*(\d+)[.)]\s*([^\n]*(?:\n(?!\s*\d+[.)]\s*)[^\n]*)*)/gm)];if(!matches.length)throw Error('Не найдены заготовки. Каждая должна начинаться с номера и точки: 1. Текст');const entries=matches.map(m=>({number:m[1],text:m[2].trim()})).filter(x=>x.text);if(!entries.length)throw Error('Заготовки пусты.');entries.forEach(entry=>bot.scenarios.push({id:id(),name:'Заготовка '+entry.number,text:entry.text}));save();render();$('notice').textContent=`Импортировано заготовок: ${entries.length}.`; }catch(err){$('notice').textContent='Ошибка импорта: '+err.message;}};
 render();
 
-async function status() { try {const response=await fetch('/api/status');if(!response.ok)throw Error(); const state=await response.json();const labels={stopped:'Остановлен',starting:'Подключение…',running:'Работает',stopping:'Остановка…'};$('runtimeLog').textContent=(state.logs || []).join('\n') || 'Событий пока нет.';$('runtimeStatus').textContent=(labels[state.state] || state.state)+(state.error ? ' — '+state.error : '');$('startBot').disabled=state.state!=='stopped';$('restartBot').disabled=state.state!=='running';$('stopBot').disabled=state.state==='stopped'||state.state==='stopping';}catch(e){$('runtimeStatus').textContent='Нет связи с локальным приложением. Запустите server.py.';} }
-async function action(path, data) {try{const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await response.json();if(!response.ok)throw Error(result.error || 'Ошибка запроса');$('notice').textContent='';await status();}catch(e){$('notice').textContent=e.message;}}
-$('startBot').onclick=()=>action('/api/start',{token:$('token').value.trim(),bot});
-$('restartBot').onclick=()=>action('/api/restart',{token:$('token').value.trim(),bot});
-$('stopBot').onclick=()=>action('/api/stop',{});
-status();setInterval(status,3000);
+async function loadBots() {
+  try {
+    const res = await fetch('/api/bots');
+    if (res.ok) {
+      const data = await res.json();
+      diskBots = data.bots || [];
+      renderBotSelect();
+    }
+  } catch(_) {}
+}
+
+async function status() {
+  try {
+    const res = await fetch('/api/bots');
+    let state = null;
+    if (res.ok) {
+      const data = await res.json();
+      diskBots = data.bots || [];
+      state = (data.runtimes && data.runtimes[activeBotId]) || null;
+    }
+    if (!state) {
+      const r2 = await fetch('/api/status');
+      if (!r2.ok) throw Error();
+      state = await r2.json();
+    }
+    const labels={stopped:'Остановлен',starting:'Подключение…',running:'Работает',stopping:'Остановка…'};
+    $('runtimeLog').textContent=(state.logs || []).join('\n') || 'Событий пока нет.';
+    $('runtimeStatus').textContent=`[${activeBotId}] `+(labels[state.state] || state.state)+` · пользователей: ${state.usersCount || 0}`+(state.error ? ' — '+state.error : '');
+    $('startBot').disabled=state.state!=='stopped';
+    $('restartBot').disabled=state.state!=='running';
+    $('stopBot').disabled=state.state==='stopped'||state.state==='stopping';
+  }catch(e){$('runtimeStatus').textContent='Нет связи с локальным приложением. Запустите server.py.';}
+}
+async function action(path, data) {try{const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...data, botId: activeBotId})});const result=await response.json();if(!response.ok)throw Error(result.error || 'Ошибка запроса');$('notice').textContent='';await status();}catch(e){$('notice').textContent=e.message;}}
+$('startBot').onclick=()=>action(activeBotId==='default'?'/api/start':'/api/bots/start',{token:$('token').value.trim(),bot});
+$('restartBot').onclick=()=>action(activeBotId==='default'?'/api/restart':'/api/bots/restart',{token:$('token').value.trim(),bot});
+$('stopBot').onclick=()=>action(activeBotId==='default'?'/api/stop':'/api/bots/stop',{});
+loadBots();status();setInterval(status,3000);
 
 $('simulate').onclick=async()=>{try{const response=await fetch('/api/simulate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bot,text:$('simulateInput').value})});const data=await response.json();$('simulateResult').textContent=response.ok ? data.result : 'Ошибка: '+data.error;}catch(e){$('simulateResult').textContent='Нет связи с локальным приложением.';}};
 
 $('importPython').onclick=()=>$('pythonFile').click();
-$('pythonFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;try{if(f.size>512000)throw Error('Файл больше 512 КБ.');const source=await f.text();const response=await fetch('/api/import-python',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source})});const data=await response.json();if(!response.ok)throw Error(data.error);if(!data.packs.length)throw Error('Буквальные списки ответов не найдены. Служебные списки и кадры анимаций не импортируются.');const preview=data.packs.map((p,i)=>`${i+1}. ${p.name} — ${p.items.length} шт., например: «${String(p.items[0]).slice(0,32)}»`).join('\n');if(!confirm(`Найдено списков ответов: ${data.packs.length}.\n${preview}\n\nДобавить их как наборы ответов? Команды, кнопки, сценарии и расписание НЕ переносятся.`))return;data.packs.forEach(p=>bot.scenarios.push({id:id(),name:p.name,text:'',replies:p.items}));save();render();$('notice').textContent=`Добавлено наборов: ${data.packs.length}. Остальные настройки .py не импортированы.`;}catch(err){$('notice').textContent='Ошибка импорта: '+err.message;}};
+$('pythonFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;try{if(f.size>512000)throw Error('Файл больше 512 КБ.');const source=await f.text();const response=await fetch('/api/import-python',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source})});const data=await response.json();if(!response.ok)throw Error(data.error);if(!data.packs.length)throw Error('Буквальные списки ответов не найдены. Служебные списки и кадры анимаций не импортируются.');const preview=data.packs.map((p,i)=>`${i+1}. ${p.name} — ${p.items.length} шт., например: «${String(p.items[0]).slice(0,32)}»`).join('\n');if(!confirm(`Найдено списков ответов: ${data.packs.length}.\n${preview}\n\nДобавить их как наборы ответов?`))return;data.packs.forEach(p=>bot.scenarios.push({id:id(),name:p.name,text:'',replies:p.items}));save();render();$('notice').textContent=`Добавлено наборов: ${data.packs.length}.`;}catch(err){$('notice').textContent='Ошибка импорта: '+err.message;}};
+
+$('importPythonFull').onclick=()=>$('pythonFullFile').click();
+$('pythonFullFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;try{if(f.size>512000)throw Error('Файл больше 512 КБ.');const source=await f.text();const response=await fetch('/api/import-android-py',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source})});const data=await response.json();if(!response.ok)throw Error(data.error);const imp=validate(data.bot);const warnText=(data.warnings||[]).length?'\n\nЗамечания:\n• '+data.warnings.join('\n• '):'';if(!confirm(`Импортировать бота «${imp.name}»?\nСценариев: ${imp.scenarios.length}, кнопок: ${imp.buttons.length}, напоминаний: ${(imp.schedule||[]).length}${warnText}`))return;bot=imp;save();render();$('notice').textContent=`Полный импорт Android .py выполнен: сценариев ${imp.scenarios.length}.`;}catch(err){$('notice').textContent='Ошибка полного импорта .py: '+err.message;}};
+
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    $('saveDiskBot').click();
+  }
+});
 
 $('generationPrompt').value=GENERATED_PROMPT;
 $('copyPrompt').onclick=async()=>{

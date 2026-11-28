@@ -7,8 +7,9 @@
 
 <p align="center">
   <a href="https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk"><b>⬇️ Скачать APK (Android)</b></a> ·
-  <a href="https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.6.0/BotControl.exe"><b>🖥 Скачать для Windows (.exe)</b></a> ·
-  <a href="https://t.me/AppBotcontrol_bot"><b>🤖 Демо-бот @AppBotcontrol_bot</b></a> ·
+  <a href="https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.7.0/BotControl.exe"><b>🖥 Скачать для Windows (.exe)</b></a> ·
+  <a href="https://github.com/visiontripin/Bot-Control/releases/latest/download/showcase-all-ready.py"><b>🧩 Демо-бот всех функций (.py)</b></a> ·
+  <a href="https://t.me/AppBotcontrol_bot"><b>🤖 @AppBotcontrol_bot</b></a> ·
   <a href="https://visiontripin.github.io/Bot-Control/presentation.html"><b>📊 Презентация</b></a> ·
   <a href="https://visiontripin.github.io/Bot-Control/"><b>🌐 Страница проекта</b></a>
 </p>
@@ -25,8 +26,19 @@ Termux).
 
 - 🔐 токен от @BotFather хранится в зашифрованном хранилище Android
   Keystore и никогда не попадает в экспорт, журнал или git;
-- 🧩 поведение настраивается кнопками в одном конструкторе: команда, фраза
-  или нажатие → текст, набор фраз, анимация, расписание, JS-скрипт или ИИ;
+- 🧩 поведение настраивается кнопками в одном конструкторе: команда, фраза,
+  регулярка или нажатие → текст (`HTML`/`MarkdownV2`), набор фраз (в т.ч. `ShuffleBag`),
+  анимация, медиа/опрос, расписание (с jitter и разовыми датами), пошаговая анкета (FSM),
+  JS-скрипт с памятью `db` или ИИ;
+- 👥 встроенная база подписчиков (`user`/`vip`/`admin`), обязательная подписка
+  на канал (`getChatMember`) и массовые рассылки;
+- 🛡 управление группами, каналами и темами форумов: приветствие и кнопка-капча,
+  антиспам (стоп-слова, ссылки, флуд), авто-приём заявок, реакции, опросы и
+  опциональный локальный Webhook-адаптер;
+- ⚡ Inline-режим (`@bot запрос`), приём платежей Telegram Stars (`XTR`,
+  ссылки и возвраты), встроенный шаблон Telegram Mini App (`/miniapp/<botId>`),
+  безопасный `http.get/post` по белому списку доменов и передача входящих
+  медиа в скрипты/ИИ;
 - 🔄 включённые боты автоматически запускаются после перезагрузки
   телефона (`BootReceiver`) и поддерживают исключение из оптимизации батареи;
 - 🧠 локальная LLM (MediaPipe / LiteRT-LM) работает на устройстве, без облака;
@@ -42,15 +54,16 @@ Termux).
 2. Получить токен: @BotFather → `/newbot` → скопировать токен.
 3. В приложении: «+ Добавить бота» → вставить токен → «▶ Запустить».
 
-Для Windows не требуется Python: скачайте [`BotControl.exe`](https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.6.0/BotControl.exe)
+Для Windows не требуется Python: скачайте [`BotControl.exe`](https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.7.0/BotControl.exe)
 и откройте локальный веб-редактор в браузере ([подробнее о Windows/Termux](tg-bot-control/desktop-web/README.md)).
 
 ## Прямые ссылки на скачивание
 
 | Файл | Назначение | Прямая ссылка |
 |---|---|---|
-| `BotControl-debug.apk` | Android-приложение (последний релиз) | [Скачать APK](https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk) |
-| `BotControl.exe` | Локальный редактор и запуск для Windows (0.6.0) | [Скачать EXE](https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.6.0/BotControl.exe) |
+| `BotControl-debug.apk` | Android-приложение v2.2.0 (последний релиз) | [Скачать APK](https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk) |
+| `BotControl.exe` | Локальный редактор и запуск для Windows (0.7.0) | [Скачать EXE](https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.7.0/BotControl.exe) |
+| `showcase-all-ready.py` | **Демо-бот всех функций** (v2.2.0 / 0.7.0) | [Скачать](https://github.com/visiontripin/Bot-Control/releases/latest/download/showcase-all-ready.py) |
 | `presentation.pdf` | Презентация проекта (PDF, 12 слайдов) | [Открыть PDF](https://github.com/visiontripin/Bot-Control/releases/latest/download/presentation.pdf) · [HTML-версия](https://visiontripin.github.io/Bot-Control/presentation.html) |
 | `presentation-bot-ready.py` | Конфиг демо-бота @AppBotcontrol_bot | [Скачать](https://github.com/visiontripin/Bot-Control/releases/latest/download/presentation-bot-ready.py) |
 | `smith-bot-ready.py` | Конфиг «Агент Смит / перекур» (ИИ, шутки, расписание) | [Скачать](https://github.com/visiontripin/Bot-Control/releases/latest/download/smith-bot-ready.py) |
@@ -63,9 +76,10 @@ Termux).
 |---|---|
 | [`tg-bot-control/android/`](tg-bot-control/android/) | исходники Android-приложения (Kotlin + Jetpack Compose) |
 | [`tg-bot-control/desktop-web/`](tg-bot-control/desktop-web/) | локальный веб-редактор и Telegram-рантайм для Windows / Linux / Termux |
-| [`tg-bot-control/*-ready.py`](tg-bot-control/) | готовые конфиги ботов: Агент Смит, канал «Даром в ПЛ», бот-презентация |
+| [`tg-bot-control/*-ready.py`](tg-bot-control/) | готовые конфиги ботов: демо всех функций (`showcase-all-ready.py`), Агент Смит, канал «Даром в ПЛ», бот-презентация |
 | [`tg-bot-control/ПЕРЕДАЧА-КОНТЕКСТА.md`](tg-bot-control/ПЕРЕДАЧА-КОНТЕКСТА.md) | память проекта: состояние, грамматика импорта, требования, ловушки |
 | [`tg-bot-control/RELEASE-NOTES.md`](tg-bot-control/RELEASE-NOTES.md) | заметки к релизам по версиям |
+| [`tg-bot-control/ДОРОЖНАЯ-КАРТА-TELEGRAM.md`](tg-bot-control/ДОРОЖНАЯ-КАРТА-TELEGRAM.md) | 5-этапная дорожная карта развития Telegram Bot API и паритета (`v1.8.0`–`v2.2.0`) |
 | [`tg-bot-control/Инструкция-код-бота.md`](tg-bot-control/Инструкция-код-бота.md) | грамматика импорта и написание конфигов ботов |
 | [`tg-bot-control/Промт-создание-ботов.md`](tg-bot-control/Промт-создание-ботов.md) | готовый промт для генерации ботов нейросетью |
 | [`tg-bot-control/ГАЙД-СОЗДАНИЕ-БОТА-LLM.md`](tg-bot-control/ГАЙД-СОЗДАНИЕ-БОТА-LLM.md) | полный гайд + интерактивный мастер-промт для создания ботов с любой LLM |
@@ -86,13 +100,17 @@ Android, `botcontrol-windows.yml` — Windows, `botcontrol-attach.yml` —
 прикрепление конфигов и презентации). Локально для Android нужен JDK 17 и
 Android SDK 35; для `desktop-web/` достаточно Python 3.9+.
 
-- **Текущая версия Android:** **v1.7.5 (versionCode 38)**, тег
-  `botcontrol-v1.7.5-code38`, sha256
-  `d8698e3fa45936842b6e658bc9242041feae54fdc568e3881b21b6579bfb236d`,
-  следующий versionCode — **39**.
-- **Текущее превью Windows:** **0.6.0**, тег
-  `botcontrol-windows-preview-0.6.0`, sha256
-  `bcf3138b7d56c6f5dd26701d37423791fcd476c255641d9944814753d75085d3`.
+- **Текущая версия кода Android (ветка разработки / CI-артефакт):**
+  **v2.2.0 (versionCode 43)** (выполнены все 5 этапов из
+  [`ДОРОЖНАЯ-КАРТА-TELEGRAM.md`](tg-bot-control/ДОРОЖНАЯ-КАРТА-TELEGRAM.md)).
+- **Версия локального веб-редактора / Windows (`desktop-web/`):** **0.7.0**
+  (паритет правил, regex, HTML/MarkdownV2, медиа, кубик, callback inline-меню,
+  FSM, мультибот на диске и полный импорт/экспорт Android `.py`).
+- **Последний опубликованный GitHub Release (`main`):** **v2.2.0 (versionCode 43)**,
+  тег `botcontrol-v2.2.0-code43`, sha256
+  `6bf22f637ac4bddb4245bfd23bff720fee76d9c97241c2b2a9630f52c1c425c0`.
+- **Последний опубликованный превью-релиз Windows:** **0.7.0**, тег
+  `botcontrol-windows-preview-0.7.0`.
 
 ## Безопасность
 

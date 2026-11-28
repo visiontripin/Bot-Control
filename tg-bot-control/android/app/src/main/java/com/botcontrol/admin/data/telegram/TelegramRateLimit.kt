@@ -18,6 +18,11 @@ class TelegramApiException(
 ) : IllegalStateException(message) {
     val isRateLimit: Boolean get() = httpCode == 429
     val isAuthError: Boolean get() = httpCode == 401 || httpCode == 404
+    val isBlockedOrForbidden: Boolean
+        get() = httpCode == 403 ||
+            description.contains("blocked by the user", ignoreCase = true) ||
+            description.contains("user is deactivated", ignoreCase = true) ||
+            description.contains("chat not found", ignoreCase = true)
 }
 
 /**

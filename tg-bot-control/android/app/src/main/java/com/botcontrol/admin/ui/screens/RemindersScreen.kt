@@ -164,6 +164,10 @@ private fun EventDialog(
     var days by remember { mutableStateOf(initial?.days ?: listOf(1, 2, 3, 4, 5, 6, 7)) }
     var menu by remember { mutableStateOf(initial?.menu ?: emptyList<InlineBtn>()) }
     var toChannel by remember { mutableStateOf(initial?.toChannel ?: false) }
+    var jitterMin by remember { mutableStateOf(initial?.jitterMin ?: 0) }
+    var parseMode by remember { mutableStateOf(initial?.parseMode.orEmpty()) }
+    var threadIdText by remember { mutableStateOf(initial?.threadId?.toString().orEmpty()) }
+    var onceDate by remember { mutableStateOf(initial?.onceDate.orEmpty()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -218,20 +222,80 @@ private fun EventDialog(
                 Text("Варианты текста через « | » — ротация по дням: «Доброе утро! | Новый день — новые вещи!»",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                DropdownField(
+                    value = jitterMin,
+                    options = listOf(0, 5, 10, 15, 30),
+                    label = "Плавающее окно (± минут)",
+                    display = { if (it == 0) "Точно по времени (0 мин)" else "± $it мин" },
+                    onSelect = { jitterMin = it },
+                )
+                Spacer(Modifier.height(6.dp))
+                Text("Разметка текста:", style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("" to "Обычный", "HTML" to "HTML", "MarkdownV2" to "MarkdownV2").forEach { (pm, lbl) ->
+                        FilterChip(selected = parseMode == pm, onClick = { parseMode = pm }, label = { Text(lbl) })
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    onceDate,
+                    { s -> onceDate = s.filter { it.isDigit() || it == '-' }.take(10) },
+                    label = { Text("Разовая дата YYYY-MM-DD (пусто = по дням недели)") },
+                    placeholder = { Text("2026-12-31") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val fmt = remember { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US) }
+                    FilterChip(
+                        selected = onceDate.isBlank(),
+                        onClick = { onceDate = "" },
+                        label = { Text("Повтор по дням") },
+                    )
+                    FilterChip(
+                        selected = onceDate.isNotBlank() && onceDate == fmt.format(java.util.Date()),
+                        onClick = { onceDate = fmt.format(java.util.Date()) },
+                        label = { Text("Разово сегодня") },
+                    )
+                    FilterChip(
+                        selected = false,
+                        onClick = {
+                            val cal = java.util.Calendar.getInstance()
+                            cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+                            onceDate = fmt.format(cal.time)
+                        },
+                        label = { Text("Завтра") },
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    threadIdText,
+                    { s -> threadIdText = s.filter { it.isDigit() }.take(9) },
+                    label = { Text("ID темы форума (message_thread_id, необязательно)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 Spacer(Modifier.height(12.dp))
                 MenuEditor(menu = menu, packs = packs, onChange = { menu = it })
             }
         },
         confirmButton = {
+            val onceValid = onceDate.isBlank() || Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(onceDate)
             TextButton(
                 onClick = {
                     onSave(ScheduleEvent(
                         id = initial?.id.orEmpty(),
                         hour = hour, minute = minute, text = text.trim(),
-                        days = days.sorted(), menu = menu, toChannel = toChannel,
+                        days = days.sorted(), enabled = initial?.enabled ?: true,
+                        menu = menu, toChannel = toChannel,
+                        jitterMin = jitterMin,
+                        parseMode = parseMode,
+                        threadId = threadIdText.toIntOrNull(),
+                        onceDate = onceDate.trim(),
                     ))
                 },
-                enabled = text.isNotBlank() && days.isNotEmpty(),
+                enabled = text.isNotBlank() && onceValid && (onceDate.isNotBlank() || days.isNotEmpty()),
             ) { Text("Сохранить") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },

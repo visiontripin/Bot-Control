@@ -78,11 +78,30 @@ fun WelcomeScreen(
         Spacer(Modifier.height(16.dp))
 
         if (profiles.isEmpty()) {
-            Card(Modifier.fillMaxWidth()) {
+            Card(
+                Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+            ) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Ботов пока нет", style = MaterialTheme.typography.titleMedium)
-                    Text("Нажми «+» или «Добавить бота» — займёт около двух минут: вставь токен от @BotFather и готово.",
+                    Text("🚀 Добро пожаловать в BotControl!", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text("Запусти своего первого Telegram-бота с телефона за 3 шага:",
                         style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text("1. Открой @BotFather в Telegram → /newbot → скопируй токен.\n" +
+                        "2. Нажми «+ Добавить бота» и вставь токен.\n" +
+                        "3. Выбери готовый шаблон, импортируй .py-код или сгенерируй бота по промпту для ИИ.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = onAddBot, modifier = Modifier.weight(1f)) {
+                            Text("🚀 Добавить первого бота")
+                        }
+                        OutlinedButton(onClick = onFaq, modifier = Modifier.weight(1f)) {
+                            Text("❓ Быстрый старт")
+                        }
+                    }
                 }
             }
             Spacer(Modifier.height(12.dp))

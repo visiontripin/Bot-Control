@@ -13,17 +13,23 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.botcontrol.admin.BotControlApp
 import com.botcontrol.admin.R
+import com.botcontrol.admin.data.AccessPolicy
+import com.botcontrol.admin.data.BotFiles
 import com.botcontrol.admin.data.BotJson
+import com.botcontrol.admin.data.BotMatcher
 import com.botcontrol.admin.data.InlineBtn
-import com.botcontrol.admin.data.withIds
 import com.botcontrol.admin.data.LocalBotStore
+import com.botcontrol.admin.data.MessageCtx
+import com.botcontrol.admin.data.ModerationPolicy
+import com.botcontrol.admin.data.ScheduleJitter
+import com.botcontrol.admin.data.findButtonRecursive
+import com.botcontrol.admin.data.withIds
 import com.botcontrol.admin.data.telegram.TelegramApi
 import com.botcontrol.admin.data.telegram.TelegramApiException
 import com.botcontrol.admin.data.telegram.TelegramRateLimit
 import com.botcontrol.admin.data.telegram.TgCallback
 import com.botcontrol.admin.data.telegram.TgMessage
-import com.botcontrol.admin.llm.BotScript
-import com.botcontrol.admin.llm.DeviceLlm
+import com.botcontrol.admin.data.telegram.TgUpdatesBatch
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -70,6 +76,8 @@ class LocalBotService : Service() {
     private var scope: CoroutineScope = newScope()
     private val botJobs = ConcurrentHashMap<Long, Job>()
     private val activeTokens = ConcurrentHashMap<Long, Pair<Job, String>>()
+    private val inlineMenuStacks = ConcurrentHashMap<String, MutableList<Pair<String?, List<InlineBtn>>>>()
+    private val subCache = ConcurrentHashMap<String, Long>()
     private val startMutex = Mutex()
 
 
@@ -142,6 +150,8 @@ class LocalBotService : Service() {
         setState(botId) { it.copy(running = false) }
         botJobs.remove(botId)?.cancel()
         activeTokens.remove(botId)
+        GroupModerationEngine.clearBotCaches(botId)
+        WebhookQueue.clear(botId)
     }
 
     /** Scope пересоздаём только если он был отменён (глобальный стоп). */
@@ -254,7 +264,7 @@ class LocalBotService : Service() {
         if (menuCommands.isNotEmpty()) {
             val menuSig = LocalBotStore.computeMenuSignature(TelegramRateLimit.tokenKey(token), menuCommands)
             if (store.menuSignature(botId) != menuSig) {
-                api.setMyCommands(menuCommands.map { it.command to it.description })
+                api.setMyCommandsScoped(menuCommands)
                     .onSuccess {
                         store.setMenuSignature(botId, menuSig)
                         BotLog.log(botId, "📜 Главное меню применено (${menuCommands.size} команд)")
@@ -287,12 +297,24 @@ class LocalBotService : Service() {
         coroutineScope {
             val botScope = this
             val schedJob = launch { schedulerLoop(botId, store, api) }
+            val webhookJob = launch {
+                while (isActive && states.value[botId]?.running == true) {
+                    val queued = WebhookQueue.drain(botId)
+                    if (queued.isNotEmpty()) {
+                        queued.forEach { batch ->
+                            processBatch(app, store, api, botId, batch, botScope)
+                        }
+                        refreshNotification()
+                    }
+                    delay(500L)
+                }
+            }
             try {
                 while (isActive && states.value[botId]?.running == true) {
                     try {
                         val timeoutSec = if (backlogDropped) 25 else 0
-                        val (messages, callbacks, nextOffset) = api.getUpdates(offset, timeoutSec)
-                        offset = nextOffset
+                        val batch = api.getUpdates(offset, timeoutSec)
+                        offset = batch.nextOffset
                         pollRateLimitStreak = 0
                         setState(botId) {
                             it.copy(
@@ -304,19 +326,12 @@ class LocalBotService : Service() {
                         if (!backlogDropped) {
                             // Confirm any backlog silently: no reply spam to messages sent before start.
                             backlogPages++
-                            if (messages.size + callbacks.size < 100 || backlogPages >= 5) {
+                            if (batch.totalCount < 100 || backlogPages >= 5) {
                                 backlogDropped = true
                             }
                             continue
                         }
-                        messages.forEach { msg ->
-                            handle(app, store, api, botId, msg, botScope)
-                            setState(botId) { it.copy(processed = it.processed + 1) }
-                        }
-                        callbacks.forEach { cb ->
-                            handleCallback(app, store, api, botId, cb, botScope)
-                            setState(botId) { it.copy(processed = it.processed + 1) }
-                        }
+                        processBatch(app, store, api, botId, batch, botScope)
                         refreshNotification()
                     } catch (e: CancellationException) {
                         throw e
@@ -370,8 +385,59 @@ class LocalBotService : Service() {
                     }
                 }
             } finally {
+                webhookJob.cancel()
                 schedJob.cancel()
             }
+        }
+    }
+
+    private suspend fun processBatch(
+        app: BotControlApp,
+        store: LocalBotStore,
+        api: TelegramApi,
+        botId: Long,
+        batch: TgUpdatesBatch,
+        botScope: CoroutineScope,
+    ) {
+        batch.memberUpdates.forEach { upd ->
+            GroupModerationEngine.handleMemberUpdate(app, store, api, botId, upd, botScope)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.joinRequests.forEach { req ->
+            GroupModerationEngine.handleJoinRequest(app, store, api, botId, req)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.messages.forEach { msg ->
+            handle(app, store, api, botId, msg, botScope)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.callbacks.forEach { cb ->
+            handleCallback(app, store, api, botId, cb, botScope)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.reactions.forEach { mr ->
+            GroupModerationEngine.handleMessageReaction(store, api, botId, mr)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.pollUpdates.forEach { p ->
+            GroupModerationEngine.handlePollUpdate(botId, p)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.pollAnswers.forEach { pa ->
+            GroupModerationEngine.handlePollAnswer(store, api, botId, pa)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.inlineQueries.forEach { iq ->
+            Stage4Engine.handleInlineQuery(app, store, api, botId, iq)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.chosenInlineResults.forEach { cir ->
+            Stage4Engine.handleChosenInlineResult(botId, cir)
+            setState(botId) { it.copy(processed = it.processed + 1) }
+        }
+        batch.preCheckoutQueries.forEach { pcq ->
+            Stage4Engine.handlePreCheckoutQuery(store, api, botId, pcq)
+            setState(botId) { it.copy(processed = it.processed + 1) }
         }
     }
 
@@ -421,9 +487,136 @@ class LocalBotService : Service() {
         botScope: CoroutineScope,
     ) {
         store.setLastChatId(msg.chatId, botId)
-        val text = if (msg.text.isBlank() && msg.kind.isNotBlank()) "[${msg.kind}]" else msg.text.trim()
-        if (text.isEmpty() && msg.photoId.isBlank()) return
+        val isGroup = ModerationPolicy.isGroupChat(msg.chatType)
+        if (msg.chatId < 0L) {
+            app.repository.touchBotUser(
+                botId = botId,
+                chatId = msg.chatId,
+                userId = 0L,
+                firstName = msg.chatTitle.ifBlank { "Чат ${msg.chatId}" },
+                username = "",
+                chatType = msg.chatType,
+            )
+        }
+        val dbUser = app.repository.touchBotUser(
+            botId = botId,
+            chatId = if (msg.chatId < 0L && msg.userId > 0L) msg.userId else msg.chatId,
+            userId = msg.userId,
+            firstName = msg.firstName.ifBlank { msg.chatTitle },
+            username = msg.username,
+            chatType = if (msg.chatId < 0L && msg.userId > 0L) "private" else msg.chatType,
+        )
+        val adminIds = store.adminIds(botId)
+        val isAdmin = AccessPolicy.isAdmin(msg.userId, msg.chatId, dbUser.role, adminIds)
+        if (dbUser.isBanned && !isAdmin) {
+            BotLog.log(botId, "⛔ Бан: сообщение от chat=${msg.chatId} проигнорировано")
+            return
+        }
+
+        // Новые участники в группе/супергруппе (приветствие и кнопка-капча)
+        if (msg.newMembers.isNotEmpty() && isGroup) {
+            GroupModerationEngine.handleNewMembers(
+                store = store,
+                api = api,
+                botId = botId,
+                chatId = msg.chatId,
+                chatTitle = msg.chatTitle,
+                threadId = msg.messageThreadId,
+                members = msg.newMembers,
+                botScope = botScope,
+            )
+            return
+        }
+
+        val mod = store.groupModeration(botId)
+        // Антиспам/стоп-слова/ссылки/флуд в группах (проверяет и edited_message!)
+        if (isGroup && GroupModerationEngine.moderateIncomingMessage(app, store, api, botId, msg, mod, botScope)) {
+            return
+        }
+
+        // Stage 4: оплата Telegram Stars (successful_payment) и данные Mini App (web_app_data)
+        if (msg.successfulPayment != null) {
+            Stage4Engine.handleSuccessfulPayment(app, store, api, botId, msg, botScope)
+            return
+        }
+        if (msg.webAppData != null) {
+            Stage4Engine.handleWebAppData(app, store, api, botId, msg, botScope)
+            return
+        }
+
+        // Редактирование сообщений не перезапускает обычные правила (чтобы не дублировать ответы).
+        if (msg.isEdited) {
+            BotLog.log(botId, "✏️ Правка сообщения msg=${msg.messageId} в чате ${msg.chatId}: '${msg.text.take(60)}'")
+            return
+        }
+
+        val text = if (msg.text.isBlank()) {
+            when {
+                msg.caption.isNotBlank() -> msg.caption.trim()
+                msg.kind.isNotBlank() -> "[${msg.kind}]"
+                else -> ""
+            }
+        } else msg.text.trim()
+        if (text.isEmpty() && msg.photoId.isBlank() && msg.fileId.isBlank() && msg.locationLat == null && msg.contactPhone.isBlank()) return
+
+        // Быстрая оплата по deep-link /start buy_<productId> (например из Inline-режима)
+        if (text.startsWith("/start buy_", ignoreCase = true)) {
+            val buyKey = text.substringAfter("/start buy_").substringBefore(' ').trim()
+            if (buyKey.isNotBlank() && Stage4Engine.sendProductInvoice(store, api, botId, msg.chatId, buyKey, msg.messageThreadId)) {
+                return
+            }
+        }
+
+        // При включённой обработке входящих медиа скачиваем фото/файл/голосовое в каталог бота (до 20 МБ)
+        val attachFileId = msg.fileId.ifBlank { msg.photoId }
+        val integ = store.integrationsConfig(botId)
+        val localMediaPath = if (integ.passIncomingMediaToLlm && attachFileId.isNotBlank() && msg.fileSize <= 20_000_000L) {
+            cacheIncomingMedia(api, botId, attachFileId, msg)
+        } else ""
+
         val keyboard = store.keyboard(botId)
+        val msgCtx = MessageCtx(
+            chatId = msg.chatId,
+            userId = msg.userId,
+            firstName = msg.firstName,
+            username = msg.username,
+            chatType = msg.chatType,
+            text = text,
+            kind = msg.kind,
+            fileId = attachFileId,
+            messageId = msg.messageId,
+            threadId = msg.messageThreadId,
+            replyToText = msg.replyToText,
+            caption = msg.caption,
+            mimeType = msg.mimeType,
+            fileName = msg.fileName,
+            fileSize = msg.fileSize,
+            localMediaPath = localMediaPath,
+        )
+
+        // Обычные посты в каналах обрабатываем только при явном правиле с областью "channel" или автореакцией.
+        if (msg.isChannelPost) {
+            val channelRules = app.repository.botRules(botId).filter { r ->
+                r.enabled && BotJson.ruleOptions(r.options).chatScope.equals("channel", ignoreCase = true)
+            }
+            if (channelRules.isEmpty()) {
+                BotLog.log(botId, "📢 Пост в канале «${msg.chatTitle.ifBlank { msg.chatId.toString() }}»: '${text.take(60)}'")
+                return
+            }
+        }
+
+        // Обязательная подписка на канал (включается в «Настройках бота»)
+        val reqChan = store.requiredChannel(botId)
+        if (reqChan.isNotBlank() && !isAdmin && msg.chatType in listOf("", "private")) {
+            val bypassRule = app.repository.botRules(botId).any { r ->
+                r.enabled && BotJson.ruleOptions(r.options).skipSubCheck &&
+                    BotMatcher.matchesRule(r.type, r.pattern, text, BotJson.ruleOptions(r.options).wholeWord)
+            }
+            if (!bypassRule) {
+                val allowed = ensureChannelSubscription(store, api, botId, reqChan, msg.chatId, msg.userId)
+                if (!allowed) return
+            }
+        }
 
         // Режим «Объявления»: визард/статистика перехватывают текст и фото.
         if (store.listingsOn(botId)) {
@@ -434,17 +627,11 @@ class LocalBotService : Service() {
                 text = text, photoId = msg.photoId, replyKeyboard = keyboard,
             )
             if (consumed) {
-                // Раньше эти сообщения не попадали в журнал — не было видно,
-                // что визард вообще сработал.
                 BotLog.log(botId, "📩 Сообщение: '${text.take(80)}'")
                 BotLog.log(botId, "   • Обработал режим «Объявления»")
                 return
             }
         } else if (ListingEngine.looksLikeNew(text) || ListingEngine.looksLikeMy(text)) {
-            // Режим «Объявления» выключен, а человек явно просит объявление
-            // («добавить объявление», /new, «мои объявления») и своего
-            // правила на этот текст нет. Раньше приходил случайный вопрос
-            // из набора — непонятно и не помогало. Свои правила в приоритете.
             val hasRule = app.repository.botRules(botId).any { r ->
                 r.enabled && r.pattern.isNotBlank() && (
                     (r.type == "button" && r.pattern.equals(text, ignoreCase = true)) ||
@@ -466,6 +653,11 @@ class LocalBotService : Service() {
             }
         }
 
+        // Пошаговые сценарии (FSM: анкеты, заявки, заказы)
+        if (FsmEngine.handleIncoming(app, store, api, botId, msg, msgCtx, keyboard)) {
+            return
+        }
+
         // Решение принимает общий «мозг» (тот же, что во вкладке имитации).
         BotLog.log(botId, "📩 Сообщение: '${text.take(80)}'")
         val decision = BotBrain.decide(
@@ -478,23 +670,135 @@ class LocalBotService : Service() {
             respectCooldown = true,
             onLlmStart = { api.sendChatAction(msg.chatId) },
             trace = { BotLog.log(botId, "   • $it") },
+            ctx = msgCtx,
         )
         BotLog.log(botId, "💬 Источник: ${decision.source}; ответ: '${decision.reply.take(60)}'")
+        val opts = decision.options
+        val pm = opts.parseMode.ifBlank { null }
+        val resolvedThreadId = ModerationPolicy.resolveThreadId(
+            ruleTargetThreadId = opts.targetThreadId,
+            incomingThreadId = msg.messageThreadId,
+            defaultGroupThreadId = mod.defaultThreadId,
+            isGroupChat = isGroup,
+        )
+        if (opts.autoReactEmoji.isNotBlank() && msg.messageId > 0) {
+            api.setMessageReaction(msg.chatId, msg.messageId, opts.autoReactEmoji)
+                .onFailure { BotLog.log(botId, "⚠️ Автореакция не поставлена: ${it.message?.take(90)}") }
+        }
         decision.anim?.let { spec ->
             val items = store.packs().firstOrNull { it.id == spec.packId }?.items.orEmpty()
-            AnimPlayer.play(botScope, api, botId, msg.chatId, spec, msg.firstName, items, decision.menu)
+            AnimPlayer.play(botScope, api, botId, msg.chatId, spec, msg.firstName, items, decision.menu, messageThreadId = resolvedThreadId)
             return
         }
         if (decision.dice.isNotBlank()) {
-            api.sendDice(msg.chatId, decision.dice)
+            api.sendDice(msg.chatId, decision.dice, messageThreadId = resolvedThreadId)
                 .onFailure { BotLog.log(botId, "❌ Кубик не отправлен: ${it.message?.take(120)}") }
+            return
+        }
+        if (decision.mediaType.isNotBlank() && decision.mediaRef.isNotBlank()) {
+            withTyping(api, store, botId, msg.chatId)
+            api.sendMediaByType(
+                chatId = msg.chatId,
+                mediaType = decision.mediaType,
+                mediaRef = decision.mediaRef,
+                caption = decision.reply,
+                parseMode = pm,
+                silent = opts.silent,
+                protectContent = opts.protectContent,
+                replyToMessageId = decision.replyToMessageId,
+                messageThreadId = resolvedThreadId,
+                inlineMenu = decision.menu,
+            ).onFailure {
+                BotLog.log(botId, "❌ Медиа (${decision.mediaType}) не отправлено: ${it.message?.take(140)}")
+            }
+            return
+        }
+        if (decision.pollQuestion.isNotBlank() && decision.pollOptions.size >= 2) {
+            withTyping(api, store, botId, msg.chatId)
+            api.sendPoll(
+                chatId = msg.chatId,
+                question = decision.pollQuestion,
+                options = decision.pollOptions,
+                isAnonymous = decision.pollAnonymous,
+                allowsMultipleAnswers = decision.pollMultiple,
+                silent = opts.silent,
+                protectContent = opts.protectContent,
+                replyToMessageId = decision.replyToMessageId,
+                messageThreadId = resolvedThreadId,
+                inlineMenu = decision.menu,
+            ).onFailure {
+                BotLog.log(botId, "❌ Опрос не отправлен: ${it.message?.take(140)}")
+            }
             return
         }
         if (decision.reply.isBlank()) return
         // Для ответа ИИ «печатает…» уже показано во время генерации — не дублируем паузу.
         if (decision.source != "ИИ") withTyping(api, store, botId, msg.chatId)
-        api.sendMessage(msg.chatId, decision.reply, keyboard, decision.menu)
-            .onFailure { BotLog.log(botId, "❌ Не отправлено (${decision.source}): ${it.message ?: "?"}") }
+        val kbOpts = store.keyboardOptions(botId)
+        api.sendMessage(
+            chatId = msg.chatId,
+            text = decision.reply,
+            keyboard = keyboard,
+            inlineMenu = decision.menu,
+            parseMode = pm,
+            disablePreview = opts.disablePreview,
+            silent = opts.silent,
+            protectContent = opts.protectContent,
+            replyToMessageId = decision.replyToMessageId,
+            messageThreadId = resolvedThreadId,
+            keyboardOptions = kbOpts,
+            removeKeyboard = opts.removeKeyboard,
+        ).onFailure { err ->
+            val apiErr = err as? TelegramApiException
+            if (apiErr?.isBlockedOrForbidden == true) {
+                app.repository.markUserBlocked(botId, msg.chatId, true)
+                BotLog.log(botId, "🚫 Пользователь ${msg.chatId} заблокировал бота (403)")
+            } else {
+                BotLog.log(botId, "❌ Не отправлено (${decision.source}): ${err.message ?: "?"}")
+            }
+        }
+    }
+
+    private suspend fun ensureChannelSubscription(
+        store: LocalBotStore,
+        api: TelegramApi,
+        botId: Long,
+        reqChannel: String,
+        chatId: Long,
+        userId: Long,
+    ): Boolean {
+        val uid = if (userId != 0L) userId else chatId
+        val cacheKey = "$botId:$uid"
+        val now = System.currentTimeMillis()
+        val cachedUntil = subCache[cacheKey] ?: 0L
+        if (cachedUntil > now) return true
+
+        val statusRes = api.getChatMemberStatus(reqChannel, uid)
+        if (statusRes.isFailure) {
+            val errMsg = statusRes.exceptionOrNull()?.message.orEmpty()
+            BotLog.log(botId, "⚠️ Проверка подписки $reqChannel: ${errMsg.take(120)}")
+            addProblem(botId, "sub_channel", "Канал $reqChannel: ${errMsg.take(100)}")
+            return true
+        }
+        resolveProblem(botId, "sub_channel")
+        val status = statusRes.getOrDefault("")
+        if (AccessPolicy.isMemberSubscribed(status)) {
+            if (subCache.size > 1000) subCache.clear()
+            subCache[cacheKey] = now + 60_000L
+            return true
+        }
+        val link = store.requiredChannelLink(botId).ifBlank {
+            if (reqChannel.startsWith("@")) "https://t.me/${reqChannel.removePrefix("@")}" else ""
+        }
+        val prompt = store.requiredChannelPrompt(botId).ifBlank {
+            "📢 Для работы с ботом подпишитесь на канал $reqChannel и нажмите «Проверить подписку»."
+        }
+        val btns = buildList {
+            if (link.isNotBlank()) add(InlineBtn(id = "sub_url", label = "📢 Подписаться", action = "url", url = link, row = 1))
+            add(InlineBtn(id = "sub_check", label = "✅ Проверить подписку", action = "sub_check", row = 2))
+        }
+        api.sendMessage(chatId, prompt, inlineMenu = btns)
+        return false
     }
 
     /** «Печатает…» + пауза-имитация набора (как typing_plugin, сек из настроек бота). */
@@ -516,6 +820,48 @@ class LocalBotService : Service() {
         botScope: CoroutineScope,
     ) {
         store.setLastChatId(cb.chatId, botId)
+        val cbUid = if (cb.userId != 0L) cb.userId else cb.chatId
+        val dbUser = app.repository.touchBotUser(
+            botId = botId,
+            chatId = cb.chatId,
+            userId = cbUid,
+            firstName = cb.firstName,
+            username = cb.username,
+            chatType = "",
+        )
+        val isAdmin = AccessPolicy.isAdmin(cbUid, cb.chatId, dbUser.role, store.adminIds(botId))
+        if (dbUser.isBanned && !isAdmin) {
+            api.answerCallbackQuery(cb.callbackId, "⛔ Доступ ограничен")
+            return
+        }
+
+        if (cb.data == "sub_check") {
+            val reqChan = store.requiredChannel(botId)
+            subCache.remove("$botId:$cbUid")
+            if (reqChan.isBlank()) {
+                api.answerCallbackQuery(cb.callbackId, "Проверка не требуется")
+                api.editMessageText(cb.chatId, cb.messageId, "✅ Можно пользоваться ботом.")
+                return
+            }
+            val res = api.getChatMemberStatus(reqChan, cbUid)
+            val status = res.getOrDefault("")
+            if (res.isSuccess && AccessPolicy.isMemberSubscribed(status)) {
+                subCache["$botId:$cbUid"] = System.currentTimeMillis() + 60_000L
+                api.answerCallbackQuery(cb.callbackId, "✅ Подписка подтверждена!")
+                api.editMessageText(cb.chatId, cb.messageId, "✅ Спасибо за подписку! Теперь можно пользоваться ботом.")
+            } else {
+                api.answerCallbackQuery(cb.callbackId, "Подпишитесь на $reqChan и нажмите снова")
+            }
+            return
+        }
+
+        if (GroupModerationEngine.handleCaptchaCallback(app, store, api, botId, cb, botScope)) {
+            return
+        }
+
+        if (FsmEngine.handleCallback(app, store, api, botId, cb, store.keyboard(botId))) {
+            return
+        }
 
         // Кнопки режима объявлений (lst_*) обрабатывает ListingEngine.
         // legacyCallback — кнопки из сообщений v1.5.2–1.5.4 ("cb<хеш>").
@@ -531,9 +877,15 @@ class LocalBotService : Service() {
             return
         }
 
-        // Ищем кнопку ТОЛЬКО среди меню этого бота (правила + события).
+        // Ищем кнопку ТОЛЬКО среди меню этого бота (правила + события, включая вложенные подменю I-4).
+        val stackKey = "$botId:${cb.chatId}:${cb.messageId}"
         val hit = findButton(app, store, botId, cb.data)
-        val btn = hit?.first
+        val syntheticBack = if (hit == null && cb.data.startsWith("back_")) {
+            val hasStack = inlineMenuStacks[stackKey]?.let { synchronized(it) { it.isNotEmpty() } } == true
+            val hasParent = hasStack || findParentMenuOf(app, store, botId, cb.data) != null
+            if (hasParent) InlineBtn(id = cb.data, label = "⬅️ Назад", action = "back") else null
+        } else null
+        val btn = hit?.first ?: syntheticBack
         // Всегда отвечаем на callback, чтобы в Telegram не висели «часики».
         if (btn == null) {
             // Диагностика: что бот знает сейчас — видно в «Журнал событий».
@@ -583,25 +935,155 @@ class LocalBotService : Service() {
             }
         }
 
-        val menu = hit?.second ?: listOf(btn)
+        val rawMenu = hit?.second ?: listOf(btn)
+        val inSubmenuNow = inlineMenuStacks[stackKey]?.let { synchronized(it) { it.isNotEmpty() } } == true
+        val menu = if (inSubmenuNow && !rawMenu.any { it.action == "back" } && rawMenu.size < 12) {
+            rawMenu + InlineBtn(id = "back_${cb.messageId}", label = "⬅️ Назад", action = "back")
+        } else rawMenu
+        val botName = states.value[botId]?.botUsername.orEmpty()
+        val userVars = BotJson.stringMap(dbUser.varsJson)
+        val cbCtx = MessageCtx(
+            chatId = cb.chatId,
+            userId = cbUid,
+            firstName = cb.firstName,
+            username = cb.username,
+            text = btn.label,
+            messageId = cb.messageId,
+        )
+        val pm = btn.parseMode.ifBlank { null }
         when (btn.action) {
+            "fsm" -> {
+                val started = FsmEngine.startFlowById(
+                    app = app, store = store, api = api, botId = botId,
+                    flowIdOrName = btn.menuTarget.ifBlank { btn.text.ifBlank { btn.label } },
+                    msgCtx = cbCtx,
+                )
+                if (!started) {
+                    api.sendMessage(cb.chatId, "Сценарий анкеты не найден или выключен.")
+                }
+            }
+            "invoice" -> {
+                val key = btn.packId.ifBlank { btn.menuTarget.ifBlank { btn.text.ifBlank { btn.label } } }
+                Stage4Engine.sendProductInvoice(store, api, botId, cb.chatId, key)
+            }
+            "submenu" -> {
+                val sub = if (btn.submenu.isNotEmpty()) btn.submenu.withIds()
+                else findTargetMenu(app, store, botId, btn.menuTarget)
+                if (sub.isEmpty()) {
+                    api.sendMessage(cb.chatId, BotMatcher.expandPlaceholders(btn.text.ifBlank { "Подменю пусто." }, cbCtx, botName, vars = userVars), parseMode = pm)
+                    return
+                }
+                if (inlineMenuStacks.size > 500) inlineMenuStacks.clear()
+                val stack = inlineMenuStacks.getOrPut(stackKey) { mutableListOf() }
+                synchronized(stack) {
+                    if (stack.size >= 16) stack.removeAt(0)
+                    stack.add(null to rawMenu)
+                }
+                val hasBack = sub.any { it.action == "back" }
+                val finalSub = if (!hasBack && sub.size < 12) {
+                    sub + InlineBtn(id = "back_${btn.id.take(28)}", label = "⬅️ Назад", action = "back")
+                } else sub
+                if (btn.text.isNotBlank()) {
+                    api.editMessageText(
+                        cb.chatId, cb.messageId,
+                        BotMatcher.expandPlaceholders(btn.text, cbCtx, botName, vars = userVars),
+                        finalSub, parseMode = pm,
+                    )
+                } else {
+                    api.editMessageReplyMarkup(cb.chatId, cb.messageId, finalSub)
+                }
+            }
+            "back" -> {
+                val stack = inlineMenuStacks[stackKey]
+                var hasMoreLevels = false
+                val prev = stack?.let {
+                    synchronized(it) {
+                        val item = if (it.isNotEmpty()) it.removeAt(it.lastIndex) else null
+                        hasMoreLevels = it.isNotEmpty()
+                        item
+                    }
+                }
+                if (prev != null) {
+                    val (prevText, prevMenuRaw) = prev
+                    val prevMenu = if (hasMoreLevels && !prevMenuRaw.any { b -> b.action == "back" } && prevMenuRaw.size < 12) {
+                        prevMenuRaw + InlineBtn(id = "back_${cb.messageId}", label = "⬅️ Назад", action = "back")
+                    } else prevMenuRaw
+                    val textToSet = btn.text.ifBlank { prevText.orEmpty() }
+                    if (textToSet.isNotBlank()) {
+                        api.editMessageText(
+                            cb.chatId, cb.messageId,
+                            BotMatcher.expandPlaceholders(textToSet, cbCtx, botName, vars = userVars),
+                            prevMenu, parseMode = pm,
+                        )
+                    } else {
+                        api.editMessageReplyMarkup(cb.chatId, cb.messageId, prevMenu)
+                    }
+                } else {
+                    val parentMenu = findParentMenuOf(app, store, botId, cb.data)
+                    if (parentMenu != null) {
+                        if (btn.text.isNotBlank()) {
+                            api.editMessageText(
+                                cb.chatId, cb.messageId,
+                                BotMatcher.expandPlaceholders(btn.text, cbCtx, botName, vars = userVars),
+                                parentMenu, parseMode = pm,
+                            )
+                        } else {
+                            api.editMessageReplyMarkup(cb.chatId, cb.messageId, parentMenu)
+                        }
+                    } else {
+                        api.answerCallbackQuery(cb.callbackId, btn.toast.ifBlank { "Это верхний уровень меню" })
+                    }
+                }
+            }
             "pack" -> {
-                val reply = BotBrain.randomFrom(store.packs(), btn.packId)
+                val raw = BotBrain.randomFrom(store.packs(), btn.packId, botId)
+                val reply = BotMatcher.expandPlaceholders(raw, cbCtx, botName, vars = userVars)
                 withTyping(api, store, botId, cb.chatId)
-                // В оригинале сарказм присылался НОВЫМ сообщением,
-                // но если в коде стоит правка — правим сообщение под кнопкой.
-                if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, reply, menu)
-                else api.sendMessage(cb.chatId, reply)
+                if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, reply, menu, parseMode = pm)
+                else api.sendMessage(cb.chatId, reply, parseMode = pm)
             }
             "script" -> {
-                BotScript.run(btn.script, cb.firstName, btn.label, cb.chatId)
+                BotBrain.runScriptWithDb(app, botId, btn.script, cb.firstName, btn.label, cb.chatId, cbCtx)
                     .onSuccess { reply ->
+                        val textOut = reply.ifBlank { "…" }
                         withTyping(api, store, botId, cb.chatId)
-                        api.sendMessage(cb.chatId, reply.ifBlank { "…" })
+                        if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, textOut, menu, parseMode = pm)
+                        else api.sendMessage(cb.chatId, textOut, parseMode = pm)
                     }
                     .onFailure { e ->
                         api.sendMessage(cb.chatId, "Ошибка скрипта: ${e.message?.take(140)}")
                     }
+            }
+            "llm" -> {
+                val prompt = btn.text.ifBlank { btn.label }
+                val decision = BotBrain.askLlmFromButton(
+                    context = this,
+                    store = store,
+                    botId = botId,
+                    chatId = cb.chatId,
+                    firstName = cb.firstName,
+                    promptText = prompt,
+                    onLlmStart = { api.sendChatAction(cb.chatId) },
+                )
+                val reply = decision.reply.ifBlank { "…" }
+                if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, reply, menu, parseMode = pm)
+                else api.sendMessage(cb.chatId, reply, parseMode = pm)
+            }
+            "media" -> {
+                val mType = btn.mediaType.ifBlank { "photo" }
+                val mRef = btn.mediaRef.ifBlank { btn.url }
+                if (mRef.isBlank()) {
+                    api.sendMessage(cb.chatId, "Не задан file_id или URL медиа для кнопки «${btn.label}».")
+                } else {
+                    withTyping(api, store, botId, cb.chatId)
+                    api.sendMediaByType(
+                        chatId = cb.chatId,
+                        mediaType = mType,
+                        mediaRef = mRef,
+                        caption = BotMatcher.expandPlaceholders(btn.text, cbCtx, botName, vars = userVars),
+                        parseMode = pm,
+                    ).onFailure { BotLog.log(botId, "❌ Медиа кнопки не отправлено: ${it.message?.take(140)}") }
+                }
             }
             "reminders_on", "reminders_off" -> {
                 val on = btn.action == "reminders_on"
@@ -625,6 +1107,7 @@ class LocalBotService : Service() {
                         if (on) "▶️ Напоминания включены." else "⏹ Напоминания выключены."
                     },
                     inlineMenu = menu,
+                    parseMode = pm,
                 )
             }
             "anim" -> {
@@ -640,24 +1123,21 @@ class LocalBotService : Service() {
                 api.sendDice(cb.chatId, btn.text.trim().ifBlank { "🎲" })
                     .onFailure { BotLog.log(botId, "❌ Кубик не отправлен: ${it.message?.take(120)}") }
             }
-            "url" -> {
-                // Кнопка-ссылка: Telegram сам открывает url, боту делать
-                // нечего (всплывашка уже отправлена). Раньше сюда падало
-                // и присылали пустой текст «…».
+            "url", "web_app", "copy_text", "switch_inline" -> {
+                // Клиентские действия Telegram: открывает ссылку/Mini App, копирует текст или подставляет inline-запрос.
             }
             else -> {
-                val reply = btn.text.ifBlank { "…" }
+                val reply = BotMatcher.expandPlaceholders(btn.text.ifBlank { "…" }, cbCtx, botName, vars = userVars)
                 withTyping(api, store, botId, cb.chatId)
-                if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, reply, menu)
-                else api.sendMessage(cb.chatId, reply)
+                if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, reply, menu, parseMode = pm)
+                else api.sendMessage(cb.chatId, reply, parseMode = pm)
             }
         }
     }
 
     /**
-     * Кнопка по её callback_data: (сама кнопка, всё меню сообщения).
-     * Ищем только среди меню ЭТОГО бота — иначе кнопка одного бота
-     * срабатывала бы у другого и чужие кнопки «не работали».
+     * Кнопка по её callback_data: (сама кнопка, всё меню текущего уровня).
+     * Ищем рекурсивно (поддерживая вложенные подменю I-4) и только среди меню ЭТОГО бота.
      */
     private suspend fun findButton(
         app: BotControlApp,
@@ -667,13 +1147,96 @@ class LocalBotService : Service() {
     ): Pair<InlineBtn, List<InlineBtn>>? {
         for (rule in app.repository.botRules(botId)) {
             val menu = BotBrain.parseMenu(rule.menu)
-            menu.firstOrNull { it.id == data }?.let { return it to menu }
+            menu.findButtonRecursive(data)?.let { return it }
         }
         for (event in store.schedule(botId)) {
             val menu = event.menu.withIds()
-            menu.firstOrNull { it.id == data }?.let { return it to menu }
+            menu.findButtonRecursive(data)?.let { return it }
         }
         return null
+    }
+
+    /** Найти именованное меню правила по menuTarget (для action == "submenu"). */
+    private suspend fun findTargetMenu(
+        app: BotControlApp,
+        store: LocalBotStore,
+        botId: Long,
+        target: String,
+    ): List<InlineBtn> {
+        val clean = target.trim()
+        if (clean.isBlank()) return emptyList()
+        for (rule in app.repository.botRules(botId)) {
+            if (rule.pattern.equals(clean, ignoreCase = true) ||
+                rule.pattern.removePrefix("/").equals(clean.removePrefix("/"), ignoreCase = true)
+            ) {
+                val m = BotBrain.parseMenu(rule.menu)
+                if (m.isNotEmpty()) return m
+            }
+        }
+        for (event in store.schedule(botId)) {
+            if (event.id == clean && event.menu.isNotEmpty()) return event.menu.withIds()
+        }
+        return emptyList()
+    }
+
+    /** Fallback для «⬅️ Назад», если стек в памяти сброшен: найти родительский уровень для id подменю. */
+    private suspend fun findParentMenuOf(
+        app: BotControlApp,
+        store: LocalBotStore,
+        botId: Long,
+        backData: String,
+    ): List<InlineBtn>? {
+        val targetId = backData.removePrefix("back_")
+        fun matchesTarget(id: String) = id == backData || id == targetId ||
+            (targetId.length >= 8 && id.startsWith(targetId))
+        fun searchParent(level: List<InlineBtn>): List<InlineBtn>? {
+            for (b in level) {
+                if (b.submenu.any { matchesTarget(it.id) } ||
+                    (matchesTarget(b.id) && b.action == "submenu")
+                ) {
+                    return level
+                }
+                searchParent(b.submenu)?.let { return it }
+            }
+            return null
+        }
+        for (rule in app.repository.botRules(botId)) {
+            searchParent(BotBrain.parseMenu(rule.menu))?.let { return it }
+        }
+        for (event in store.schedule(botId)) {
+            searchParent(event.menu.withIds())?.let { return it }
+        }
+        return null
+    }
+
+    private suspend fun cacheIncomingMedia(
+        api: TelegramApi,
+        botId: Long,
+        fileId: String,
+        msg: TgMessage,
+    ): String {
+        val dir = BotFiles.subdir(this, botId, BotFiles.MEDIA)
+        // Удаляем старые авто-кэшированные вложения, оставляя последние 30
+        dir.listFiles()?.filter { it.isFile && it.name.startsWith("in_") }
+            ?.sortedByDescending { it.lastModified() }
+            ?.drop(30)
+            ?.forEach { runCatching { it.delete() } }
+
+        val tgPath = api.getFile(fileId).getOrNull()?.takeIf { it.isNotBlank() } ?: return ""
+        val extFromPath = tgPath.substringAfterLast('.', "").lowercase().take(8)
+        val ext = when {
+            extFromPath.isNotBlank() && extFromPath.all { it.isLetterOrDigit() } -> extFromPath
+            msg.kind == "фото" -> "jpg"
+            msg.kind == "голосовое" -> "ogg"
+            msg.kind == "видео" -> "mp4"
+            msg.kind == "аудио" -> "mp3"
+            else -> "bin"
+        }
+        val base = BotFiles.sanitizeName(msg.fileName.ifBlank { "in_${msg.messageId}_${fileId.take(8)}.$ext" })
+        val name = if (base.startsWith("in_")) base else "in_${msg.messageId}_$base"
+        val downloaded = api.downloadFile(tgPath, dir, name).getOrNull() ?: return ""
+        BotLog.log(botId, "📎 Скачано вложение (${msg.kind.ifBlank { "файл" }}): ${downloaded.name}")
+        return downloaded.absolutePath
     }
 
     // ---------- планировщик напоминаний ----------
@@ -687,7 +1250,8 @@ class LocalBotService : Service() {
             try {
                 if (!store.remindersOn(botId)) continue
                 val chatId = store.lastChatId(botId)
-                if (chatId == 0L) continue
+                val allEvents = store.schedule(botId)
+                if (chatId == 0L && allEvents.none { it.enabled && it.toChannel }) continue
 
                 val cal = Calendar.getInstance()
                 val today = dayFormat.format(cal.time)
@@ -699,28 +1263,37 @@ class LocalBotService : Service() {
                 val rawDow = cal.get(Calendar.DAY_OF_WEEK)
                 val dow = if (rawDow == Calendar.SUNDAY) 7 else rawDow - 1
 
+                val year = cal.get(Calendar.YEAR)
+                val doy = cal.get(Calendar.DAY_OF_YEAR)
                 val nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
-                val events = store.schedule(botId)
-                    .filter { it.enabled && it.days.contains(dow) }
-                    .sortedBy { it.hour * 60 + it.minute }
+                val modDefaultThread = store.groupModeration(botId).defaultThreadId
+                val events = allEvents
+                    .filter { e ->
+                        e.enabled && (if (e.onceDate.isNotBlank()) e.onceDate == today else e.days.contains(dow))
+                    }
+                    .sortedBy { ScheduleJitter.effectiveMinute(it.hour, it.minute, it.id, year, doy, it.jitterMin) }
+                val onceDoneIds = mutableListOf<String>()
                 for (e in events) {
                     val key = "${e.id}@$today"
                     if (key in sentToday) continue
-                    val ageMin = nowMin - (e.hour * 60 + e.minute)
+                    val targetMin = ScheduleJitter.effectiveMinute(e.hour, e.minute, e.id, year, doy, e.jitterMin)
+                    val ageMin = nowMin - targetMin
                     if (ageMin < 0) continue          // ещё впереди
                     if (ageMin > CATCH_UP_MINUTES) {  // слишком старое — тихо пропускаем
                         sentToday.add(key)
                         continue
                     }
                     var markDone = true
-                    val postText = e.pickVariant(cal.get(Calendar.DAY_OF_YEAR))
+                    val postText = e.pickVariant(doy)
+                    val pm = e.parseMode.ifBlank { null }
+                    val targetThread = e.threadId ?: if (e.toChannel || chatId < 0L) modDefaultThread else null
                     if (e.toChannel) {
                         // Пост в канал публикаций (например, дайджест 10:20/20:40).
                         val channel = store.channelId(botId)
                         if (channel.isBlank()) {
                             BotLog.log(botId, "⚠️ Событие ${e.timeLabel()} в канал, но канал не задан")
                         } else {
-                            val res = api.sendTo(channel, postText, e.menu.withIds())
+                            val res = api.sendTo(channel, postText, e.menu.withIds(), parseMode = pm, messageThreadId = targetThread)
                             if (res.isSuccess) {
                                 BotLog.log(botId, "📢 Пост в канал $channel: ${postText.take(60)}")
                             } else {
@@ -736,9 +1309,9 @@ class LocalBotService : Service() {
                                 }
                             }
                         }
-                    } else {
+                    } else if (chatId != 0L) {
                         withTyping(api, store, botId, chatId)
-                        val res = api.sendMessage(chatId, postText, inlineMenu = e.menu.withIds())
+                        val res = api.sendMessage(chatId, postText, inlineMenu = e.menu.withIds(), parseMode = pm, messageThreadId = targetThread)
                         if (res.isSuccess) {
                             BotLog.log(botId, "⏰ Напоминание ${e.timeLabel()}: ${postText.take(60)}")
                         } else {
@@ -753,9 +1326,20 @@ class LocalBotService : Service() {
                                 markDone = false
                             }
                         }
+                    } else {
+                        markDone = false
                     }
-                    if (markDone) sentToday.add(key)
+                    if (markDone) {
+                        sentToday.add(key)
+                        if (e.onceDate.isNotBlank()) onceDoneIds.add(e.id)
+                    }
                     delay(400)
+                }
+                if (onceDoneIds.isNotEmpty()) {
+                    val refreshed = store.schedule(botId).map { ev ->
+                        if (ev.id in onceDoneIds) ev.copy(enabled = false) else ev
+                    }
+                    store.setSchedule(refreshed, botId)
                 }
                 val remOn = store.remindersOn(botId)
                 setState(botId) { it.copy(remindersOn = remOn) }

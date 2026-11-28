@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.botcontrol.admin.data.BotRepository
 import com.botcontrol.admin.llm.BotScript
+import com.botcontrol.admin.llm.ScriptDbSession
 import com.botcontrol.admin.ui.components.ErrorText
 import kotlinx.coroutines.launch
 
@@ -46,6 +47,8 @@ fun ScriptEditorScreen(repository: BotRepository, ruleId: Int, onBack: () -> Uni
     var error by remember { mutableStateOf("") }
     var testInput by remember { mutableStateOf("привет") }
     var testOutput by remember { mutableStateOf("") }
+    val testDb = remember { ScriptDbSession() }
+    var testDbDump by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         repository.botRules().firstOrNull { it.id == ruleId }?.let { rule ->
@@ -62,7 +65,7 @@ fun ScriptEditorScreen(repository: BotRepository, ruleId: Int, onBack: () -> Uni
             TextButton(onClick = onBack) { Text("← Назад") }
             Text("Скрипт: $pattern", style = MaterialTheme.typography.titleSmall)
         }
-        Text("JS-функция handle(e): e.user, e.text, e.chatId → верни текст ответа. Без доступа к Java/сети.",
+        Text("JS handle(e): e.user, e.text, e.chatId, e.username, e.userId, e.chatType, e.args, e.replyToText, e.kind, e.fileId, e.caption, e.mimeType, e.fileName, e.localPath. Память в Room: db.get/set/del/incr и db.getGlobal/setGlobal/delGlobal/incrGlobal. Внешний HTTP (по allowlist): http.get(url, headers?) и http.post(url, bodyOrObj, headers?).",
             style = MaterialTheme.typography.bodySmall)
         if (error.isNotBlank()) ErrorText(error)
         if (message.isNotBlank()) Text(message, color = MaterialTheme.colorScheme.primary)
@@ -97,12 +100,25 @@ fun ScriptEditorScreen(repository: BotRepository, ruleId: Int, onBack: () -> Uni
                     label = { Text("Входящее сообщение") },
                     singleLine = true, modifier = Modifier.fillMaxWidth())
                 Button(onClick = {
-                    BotScript.run(code, "Тест", testInput, 0L)
-                        .onSuccess { testOutput = it; error = "" }
+                    BotScript.run(code, "Тест", testInput, 0L, dbSession = testDb)
+                        .onSuccess {
+                            testOutput = it
+                            error = ""
+                            val u = testDb.userSnapshot().entries.joinToString { "${it.key}=${it.value}" }
+                            val g = testDb.globalSnapshot().entries.joinToString { "${it.key}=${it.value}" }
+                            testDbDump = listOfNotNull(
+                                u.takeIf(String::isNotBlank)?.let { "user: $it" },
+                                g.takeIf(String::isNotBlank)?.let { "global: $it" },
+                            ).joinToString(" | ")
+                        }
                         .onFailure { error = it.message ?: "Ошибка" }
                 }, modifier = Modifier.fillMaxWidth()) { Text("▶ Выполнить") }
                 if (testOutput.isNotBlank()) {
                     Text("Ответ: $testOutput", style = MaterialTheme.typography.bodyMedium)
+                }
+                if (testDbDump.isNotBlank()) {
+                    Text("Память db: $testDbDump", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

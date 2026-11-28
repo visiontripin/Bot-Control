@@ -310,7 +310,10 @@ fun BotTreeScreen(
                 TreeLeaf("Кнопки бота", "надписи и действия кнопок; кнопки под сообщениями") {
                     onOpen("buttons")
                 },
-                TreeLeaf("Напоминания (расписание)", "время, дни, кнопки") {
+                TreeLeaf("📋 Пошаговые анкеты (FSM)", "заявки, заказы, квизы, ветвления без кода") {
+                    onOpen("fsm")
+                },
+                TreeLeaf("Напоминания (расписание)", "время, дни, разовые даты, кнопки") {
                     onOpen("reminders")
                 },
                 TreeLeaf("Наборы ответов", "шутки, сарказм, свои + редактор") {
@@ -318,6 +321,23 @@ fun BotTreeScreen(
                 },
                 TreeLeaf("Поведение и паузы", "«печатает…», антифлуд, память ИИ") {
                     onOpen("behavior")
+                },
+            ))
+
+        TreeBranch("👥", "Аудитория, группы и рассылки", "подписчики, модерация групп/форумов, рассылки",
+            expanded.contains("audience"), { toggle("audience") },
+            listOf(
+                TreeLeaf("👥 Подписчики, роли и теги", "база чатов, VIP/админ, бан, переменные") {
+                    onOpen("users")
+                },
+                TreeLeaf("🛡 Группы, каналы и модерация", "приветствие, капча, антиспам, форумы, webhook") {
+                    onOpen("groups")
+                },
+                TreeLeaf("📣 Массовая рассылка", "по всем или сегменту с прогрессом и 429/403") {
+                    onOpen("broadcast")
+                },
+                TreeLeaf("⚡ Инлайн, Stars, Mini App и API", "инлайн-карточки @бот, Stars XTR, web_app, HTTP API") {
+                    onOpen("stage4")
                 },
             ))
 
@@ -384,6 +404,10 @@ fun BotTreeScreen(
                     confirmDelete = false
                     LocalBotService.stopBot(context, botId)
                     scope.launch {
+                        repository.deleteBotUsers(botId)
+                        repository.deleteBotKv(botId)
+                        repository.deleteBotRules(botId)
+                        localStore.resetBot(botId)
                         localStore.removeProfile(botId)
                         onBack()
                     }

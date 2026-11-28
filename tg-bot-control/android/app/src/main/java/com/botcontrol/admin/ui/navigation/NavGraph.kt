@@ -26,8 +26,11 @@ import com.botcontrol.admin.ui.screens.BackupScreen
 import com.botcontrol.admin.ui.screens.BehaviorScreen
 import com.botcontrol.admin.ui.screens.BotSettingsScreen
 import com.botcontrol.admin.ui.screens.BotTreeScreen
+import com.botcontrol.admin.ui.screens.BroadcastScreen
 import com.botcontrol.admin.ui.screens.DashboardScreen
 import com.botcontrol.admin.ui.screens.FaqScreen
+import com.botcontrol.admin.ui.screens.FsmScreen
+import com.botcontrol.admin.ui.screens.GroupsScreen
 import com.botcontrol.admin.ui.screens.ButtonsScreen
 import com.botcontrol.admin.ui.screens.ImportScreen
 import com.botcontrol.admin.ui.screens.PackEditScreen
@@ -51,6 +54,8 @@ import com.botcontrol.admin.ui.screens.PacksScreen
 import com.botcontrol.admin.ui.screens.ScriptEditorScreen
 import com.botcontrol.admin.ui.screens.SettingsScreen
 import com.botcontrol.admin.ui.screens.SimulateScreen
+import com.botcontrol.admin.ui.screens.Stage4Screen
+import com.botcontrol.admin.ui.screens.UsersScreen
 import com.botcontrol.admin.ui.screens.WelcomeScreen
 import kotlinx.coroutines.launch
 
@@ -75,6 +80,11 @@ object Routes {
     const val PROMPT = "prompt"
     const val BUTTONS = "buttons"
     const val BEHAVIOR = "behavior"
+    const val USERS = "users"
+    const val BROADCAST = "broadcast"
+    const val FSM = "fsm"
+    const val GROUPS = "groups"
+    const val STAGE4 = "stage4"
     const val DEV_LOG = "devlog"
     const val EXPORT = "export"
     const val FILES = "files"
@@ -248,6 +258,26 @@ fun NavGraph(
         composable(Routes.BEHAVIOR) {
             BehaviorScreen(localStore, onBack = { nav.popBackStack() })
         }
+        composable(Routes.USERS) {
+            UsersScreen(
+                localStore = localStore,
+                repository = repository,
+                onOpenBroadcast = { nav.navigate(Routes.BROADCAST) },
+                onBack = { nav.popBackStack() },
+            )
+        }
+        composable(Routes.BROADCAST) {
+            BroadcastScreen(localStore, repository, onBack = { nav.popBackStack() })
+        }
+        composable(Routes.FSM) {
+            FsmScreen(localStore, onBack = { nav.popBackStack() })
+        }
+        composable(Routes.GROUPS) {
+            GroupsScreen(localStore, repository, onBack = { nav.popBackStack() })
+        }
+        composable(Routes.STAGE4) {
+            Stage4Screen(localStore, onBack = { nav.popBackStack() })
+        }
         composable(Routes.DEV_LOG) {
             LogScreen(onBack = { nav.popBackStack() })
         }
@@ -255,7 +285,11 @@ fun NavGraph(
             ExportScreen(localStore, repository, onBack = { nav.popBackStack() })
         }
         composable(Routes.APP_LOG) {
-            AppLogScreen(onBack = { nav.popBackStack() })
+            AppLogScreen(
+                onBack = { nav.popBackStack() },
+                localStore = localStore,
+                repository = repository,
+            )
         }
         composable(Routes.FILES) {
             FileServerScreen(localStore, onBack = { nav.popBackStack() })

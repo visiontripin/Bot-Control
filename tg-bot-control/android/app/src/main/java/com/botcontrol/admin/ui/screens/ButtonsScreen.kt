@@ -53,6 +53,8 @@ fun ButtonsScreen(localStore: LocalBotStore, repository: BotRepository, onBack: 
     val scope = rememberCoroutineScope()
     var botId by remember { mutableStateOf(0L) }
     var keyboard by remember { mutableStateOf<List<String>>(emptyList()) }
+    var kbOpts by remember { mutableStateOf(com.botcontrol.admin.data.KeyboardOptions()) }
+    var showKbLayout by remember { mutableStateOf(false) }
     var showAdd by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf("") }
@@ -64,6 +66,7 @@ fun ButtonsScreen(localStore: LocalBotStore, repository: BotRepository, onBack: 
         scope.launch {
             botId = localStore.activeBotId()
             keyboard = localStore.keyboard(botId)
+            kbOpts = localStore.keyboardOptions(botId)
             rules = repository.botRules(botId)
             events = localStore.schedule(botId)
             packs = localStore.packs()
@@ -121,6 +124,52 @@ fun ButtonsScreen(localStore: LocalBotStore, repository: BotRepository, onBack: 
                 Spacer(Modifier.height(4.dp))
                 Button(onClick = { showAdd = true }, modifier = Modifier.fillMaxWidth()) {
                     Text("+ Добавить кнопку")
+                }
+                TextButton(onClick = { showKbLayout = !showKbLayout }) {
+                    Text(if (showKbLayout) "▲ Скрыть раскладку клавиатуры" else "⚙ Раскладка, одноразовая, контакт/геолокация")
+                }
+                if (showKbLayout) {
+                    Text("Кнопок в ряду:", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(1, 2, 3, 4).forEach { col ->
+                            FilterChip(
+                                selected = kbOpts.columns == col,
+                                onClick = { kbOpts = kbOpts.copy(columns = col) },
+                                label = { Text("$col") },
+                            )
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Скрывать после нажатия (one_time_keyboard)", Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall)
+                        Switch(checked = kbOpts.oneTime, onCheckedChange = { kbOpts = kbOpts.copy(oneTime = it) })
+                    }
+                    OutlinedTextField(
+                        kbOpts.placeholder, { kbOpts = kbOpts.copy(placeholder = it) },
+                        label = { Text("Подсказка в поле ввода (placeholder)") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(
+                        kbOpts.contactButton, { kbOpts = kbOpts.copy(contactButton = it) },
+                        label = { Text("📞 Спец-кнопка контакта (пусто = выкл)") },
+                        placeholder = { Text("Поделиться телефоном") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(
+                        kbOpts.locationButton, { kbOpts = kbOpts.copy(locationButton = it) },
+                        label = { Text("📍 Спец-кнопка геолокации (пусто = выкл)") },
+                        placeholder = { Text("Отправить геопозицию") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            localStore.setKeyboardOptions(kbOpts, botId)
+                            message = "✅ Настройки клавиатуры сохранены"
+                        }
+                    }, modifier = Modifier.fillMaxWidth()) { Text("Сохранить раскладку") }
                 }
 
             }
@@ -266,23 +315,32 @@ fun ButtonsScreen(localStore: LocalBotStore, repository: BotRepository, onBack: 
 }
 
 @Composable
-private fun ButtonLine(b: InlineBtn) {
+private fun ButtonLine(b: InlineBtn, indent: Int = 0) {
     val action = when (b.action) {
         "pack" -> "→ случайное из набора ${b.packId}"
         "reminders_on" -> "→ включить напоминания"
         "reminders_off" -> "→ выключить напоминания"
         "script" -> "→ скрипт JS"
         "url" -> "→ ссылка ${b.url}"
+        "web_app" -> "→ Mini App ${b.url}"
+        "copy_text" -> "→ копировать: ${b.text.take(25)}"
+        "switch_inline" -> "→ запрос в чат: ${b.text.take(25)}"
+        "llm" -> "→ ИИ: ${b.text.ifBlank { b.label }.take(25)}"
+        "media" -> "→ медиа (${b.mediaType.ifBlank { "photo" }})"
+        "submenu" -> "→ подменю (${b.submenu.size} кн.)"
+        "back" -> "→ ⬅️ назад"
         else -> "→ текст: ${b.text.take(30)}"
     }
     val flags = buildList {
         if (b.edit) add("правит сообщение")
+        if (b.parseMode.isNotBlank()) add(b.parseMode)
         if (b.row > 0) add("ряд ${b.row}")
     }.joinToString(", ")
-    Column(Modifier.padding(start = 8.dp, top = 2.dp, bottom = 2.dp)) {
+    Column(Modifier.padding(start = (8 + indent * 12).dp, top = 2.dp, bottom = 2.dp)) {
         Text("🔘 ${b.label}", style = MaterialTheme.typography.bodySmall)
         Text(action + if (flags.isNotBlank()) " ($flags)" else "",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
+        b.submenu.forEach { child -> ButtonLine(child, indent + 1) }
     }
 }

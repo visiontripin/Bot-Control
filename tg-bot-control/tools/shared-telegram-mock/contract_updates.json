@@ -1,0 +1,88 @@
+{
+  "description": "Shared Telegram Bot API contract updates used by both desktop-web and Android Kotlin harness tests.",
+  "getUpdatesResponse": {
+    "ok": true,
+    "result": [
+      {
+        "update_id": 5001,
+        "message": {
+          "message_id": 101,
+          "chat": { "id": 7001, "type": "private", "first_name": "Алиса", "username": "alice_test" },
+          "from": { "id": 7001, "first_name": "Алиса", "username": "alice_test" },
+          "text": "/start"
+        }
+      },
+      {
+        "update_id": 5002,
+        "message": {
+          "message_id": 102,
+          "chat": { "id": 7001, "type": "private", "first_name": "Алиса", "username": "alice_test" },
+          "from": { "id": 7001, "first_name": "Алиса", "username": "alice_test" },
+          "text": "/help@BotControlDemoBot"
+        }
+      },
+      {
+        "update_id": 5003,
+        "message": {
+          "message_id": 103,
+          "chat": { "id": 7001, "type": "private", "first_name": "Алиса", "username": "alice_test" },
+          "from": { "id": 7001, "first_name": "Алиса", "username": "alice_test" },
+          "text": "скот и стадо"
+        }
+      },
+      {
+        "update_id": 5004,
+        "message": {
+          "message_id": 104,
+          "chat": { "id": 7001, "type": "private", "first_name": "Алиса", "username": "alice_test" },
+          "from": { "id": 7001, "first_name": "Алиса", "username": "alice_test" },
+          "text": "заказ 42"
+        }
+      },
+      {
+        "update_id": 5005,
+        "callback_query": {
+          "id": "cbq_5005",
+          "from": { "id": 7001, "first_name": "Алиса", "username": "alice_test" },
+          "message": {
+            "message_id": 101,
+            "chat": { "id": 7001, "type": "private" }
+          },
+          "data": "cb:0:0"
+        }
+      },
+      {
+        "update_id": 5006,
+        "inline_query": {
+          "id": "iq_5006",
+          "from": { "id": 7001, "first_name": "Алиса", "username": "alice_test" },
+          "query": "тариф",
+          "chat_type": "private",
+          "offset": ""
+        }
+      },
+      {
+        "update_id": 5007,
+        "pre_checkout_query": {
+          "id": "pcq_5007",
+          "from": { "id": 7001, "first_name": "Алиса", "username": "alice_test" },
+          "currency": "XTR",
+          "total_amount": 50,
+          "invoice_payload": "prod_vip"
+        }
+      },
+      {
+        "update_id": 5008,
+        "message": {
+          "message_id": 108,
+          "chat": { "id": 7001, "type": "private", "first_name": "Алиса", "username": "alice_test" },
+          "from": { "id": 7001, "first_name": "Алиса", "username": "alice_test" },
+          "web_app_data": {
+            "data": "{\"action\":\"lead\",\"name\":\"Алиса\"}",
+            "button_text": "Открыть витрину"
+          }
+        }
+      }
+    ]
+  }
+}

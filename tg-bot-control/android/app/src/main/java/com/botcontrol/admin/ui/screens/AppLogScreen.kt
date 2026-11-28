@@ -23,6 +23,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -31,24 +32,34 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.botcontrol.admin.data.BotRepository
+import com.botcontrol.admin.data.LocalBotStore
 import com.botcontrol.admin.llm.DeviceLlm
+import com.botcontrol.admin.service.BotDiagnostics
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 /**
  * Общий лог приложения: все события (запуск ботов, входящие сообщения,
- * решения «мозга», напоминания, кнопки, ошибки Telegram/ИИ).
- * Выделение удержанием + копирование, «Копировать всё» и экспорт в .txt.
+ * решения «мозга», напоминания, кнопки, ошибки Telegram/ИИ) + единая диагностика (U-X3).
+ * Выделение удержанием + копирование, «Копировать всё», «Диагностика» и экспорт в .txt.
  */
 @Composable
-fun AppLogScreen(onBack: () -> Unit) {
+fun AppLogScreen(
+    onBack: () -> Unit,
+    localStore: LocalBotStore? = null,
+    repository: BotRepository? = null,
+) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
     val log by DeviceLlm.log.collectAsState()
     val timeFormat = remember { SimpleDateFormat("dd.MM HH:mm:ss", Locale.getDefault()) }
     var pendingExport by remember { mutableStateOf<String?>(null) }
     var copied by remember { mutableStateOf(false) }
+    var diagStatus by remember { mutableStateOf("") }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/plain"),
@@ -103,8 +114,21 @@ fun AppLogScreen(onBack: () -> Unit) {
                 }
             }, modifier = Modifier.weight(1f)) { Text("📤 Поделиться") }
             OutlinedButton(onClick = {
+                scope.launch {
+                    val report = BotDiagnostics.buildReport(context, localStore, repository)
+                    clipboard.setText(AnnotatedString(report))
+                    pendingExport = report
+                    diagStatus = "🩺 Диагностический отчёт скопирован (без токенов)"
+                    exportLauncher.launch("botcontrol-diagnostics.txt")
+                }
+            }, modifier = Modifier.weight(1f)) { Text("🩺 Диагностика") }
+            OutlinedButton(onClick = {
                 DeviceLlm.log("🧺 Общий лог очищен")
             }, modifier = Modifier.weight(1f)) { Text("Очистить") }
+        }
+        if (diagStatus.isNotBlank()) {
+            Text(diagStatus, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary)
         }
         Spacer(Modifier.padding(6.dp))
         SelectionContainer {

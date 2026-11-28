@@ -47,6 +47,11 @@ private data class SimResult(
     val anim: com.botcontrol.admin.data.AnimSpec? = null,
     val animPack: List<String> = emptyList(),
     val dice: String = "",
+    val mediaType: String = "",
+    val mediaRef: String = "",
+    val pollQuestion: String = "",
+    val pollOptions: List<String> = emptyList(),
+    val parseMode: String = "",
 )
 
 /**
@@ -115,11 +120,19 @@ fun SimulateScreen(
                                 input = message,
                                 source = decision.source,
                                 reply = decision.reply,
-                                menu = decision.menu.map { it.label },
+                                menu = decision.menu.map { btn ->
+                                    if (btn.submenu.isNotEmpty()) "${btn.label} [↳${btn.submenu.size}]"
+                                    else btn.label
+                                },
                                 trace = trace.toList(),
                                 anim = decision.anim,
                                 animPack = animPack,
                                 dice = decision.dice,
+                                mediaType = decision.mediaType,
+                                mediaRef = decision.mediaRef,
+                                pollQuestion = decision.pollQuestion,
+                                pollOptions = decision.pollOptions,
+                                parseMode = decision.options.parseMode,
                             ))
                         } finally {
                             running = false
@@ -154,8 +167,25 @@ fun SimulateScreen(
                             res.dice.isNotBlank() ->
                                 Text("${res.dice}  (кубик Telegram: результат случайный)",
                                     style = MaterialTheme.typography.bodyMedium)
+                            res.mediaType.isNotBlank() -> {
+                                Text("🖼 Медиа (${res.mediaType}): ${res.mediaRef.take(50)}",
+                                    style = MaterialTheme.typography.bodyMedium)
+                                if (res.reply.isNotBlank()) {
+                                    Text("Подпись: ${res.reply}", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            res.pollQuestion.isNotBlank() -> {
+                                Text("📊 Опрос: ${res.pollQuestion}", style = MaterialTheme.typography.bodyMedium)
+                                res.pollOptions.forEachIndexed { idx, opt ->
+                                    Text("  ${idx + 1}. $opt", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
                             else -> Text(res.reply.ifBlank { "(промолчал — кулдаун)" },
                                 style = MaterialTheme.typography.bodyMedium)
+                        }
+                        if (res.parseMode.isNotBlank()) {
+                            Text("Формат: ${res.parseMode}", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         if (res.menu.isNotEmpty()) {
                             Spacer(Modifier.height(4.dp))

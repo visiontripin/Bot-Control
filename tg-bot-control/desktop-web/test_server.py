@@ -10,8 +10,11 @@ from http.server import ThreadingHTTPServer
 import time
 import unittest
 import urllib.error
-from server import Runtime, Handler, compile_bot, action_text, match_action, connect_error, poll_error, parse_retry_after, rate_limit_wait_sec, TgError
-from android_import import extract_lists
+from pathlib import Path
+import shutil
+import tempfile
+from server import Runtime, Handler, BotDiskStore, MultiBotManager, compile_bot, compile_bot_full, action_text, match_action, connect_error, poll_error, parse_retry_after, rate_limit_wait_sec, TgError
+from android_import import extract_lists, import_android_py, export_android_py
 from animations import PRESETS, frames, validate_animation
 
 
@@ -522,6 +525,215 @@ class RateLimit429Tests(unittest.TestCase):
         self.assertEqual([c[0] for c in calls], ['sendMessage', 'editMessageText', 'editMessageText', 'editMessageText'])
         self.assertIn(2, waits)  # retry_after=1 -> wait 2s
         self.assertEqual(r.status()['error'], '')
+
+
+class Stage5ParityTests(unittest.TestCase):
+    """Тесты Stage 5 parity: regex, inline callback submenus, dice/media/HTML, FSM, Android .py round-trip, диски и общий мок Telegram."""
+
+    def test_regex_dice_media_and_html_fallback(self):
+        calls = []
+
+        def request(token, method, payload):
+            calls.append((method, dict(payload)))
+            if method == 'sendMessage' and payload.get('parse_mode') == 'HTML':
+                raise TgError("Bad Request: can't parse entities", 'api', 400)
+            return {'message_id': len(calls)}
+
+        bot = {
+            'scenarios': [
+                {'id': 'rx', 'name': 'Заказ', 'text': '<b>Заказ для {user}</b> ({args})', 'parseMode': 'HTML', 'trigger': {'type': 'regex', 'value': r'^заказ\s+\d+$'}},
+                {'id': 'dc', 'name': 'Кубик', 'text': '', 'diceEmoji': '🎯', 'trigger': {'type': 'command', 'value': '/roll'}},
+                {'id': 'md', 'name': 'Фото', 'text': 'Привет, {user}', 'media': {'type': 'photo', 'ref': 'photo_123'}, 'trigger': {'type': 'command', 'value': '/pic'}},
+            ],
+            'buttons': [],
+        }
+        buttons, triggers, _, callbacks, fsm = compile_bot_full(bot)
+        r = Runtime(request)
+        stop = threading.Event()
+        kb = {'keyboard': [], 'resize_keyboard': True}
+
+        r.handle_update('t', {'update_id': 1, 'message': {'chat': {'id': 10}, 'from': {'id': 10, 'first_name': 'Иван'}, 'text': 'заказ 77'}}, buttons, triggers, kb, stop, callbacks, fsm)
+        r.handle_update('t', {'update_id': 2, 'message': {'chat': {'id': 10}, 'from': {'id': 10, 'first_name': 'Иван'}, 'text': '/roll'}}, buttons, triggers, kb, stop, callbacks, fsm)
+        r.handle_update('t', {'update_id': 3, 'message': {'chat': {'id': 10}, 'from': {'id': 10, 'first_name': 'Иван'}, 'text': '/pic'}}, buttons, triggers, kb, stop, callbacks, fsm)
+
+        # HTML вызвал fallback без parse_mode
+        self.assertEqual([c[0] for c in calls], ['sendMessage', 'sendMessage', 'sendDice', 'sendPhoto'])
+        self.assertNotIn('parse_mode', calls[1][1])
+        self.assertIn('Иван', calls[1][1]['text'])
+        self.assertEqual(calls[2][1]['emoji'], '🎯')
+        self.assertEqual(calls[3][1]['photo'], 'photo_123')
+
+        with self.assertRaises(ValueError):
+            compile_bot({'scenarios': [{'id': 'bad', 'text': 'x', 'trigger': {'type': 'regex', 'value': '[unclosed'}}], 'buttons': []})
+
+    def test_inline_submenu_callbacks_and_fsm(self):
+        calls = []
+
+        def request(token, method, payload):
+            calls.append((method, dict(payload)))
+            return {'message_id': 55}
+
+        bot = {
+            'fsmFlows': [{
+                'id': 'lead',
+                'name': 'Заявка',
+                'steps': [
+                    {'id': 's1', 'prompt': 'Как вас зовут?', 'type': 'text', 'varName': 'client'},
+                    {'id': 's2', 'prompt': 'Ваш телефон?', 'type': 'phone', 'varName': 'phone'},
+                ],
+                'summaryTemplate': 'Заявка принята: {client}, {phone}',
+            }],
+            'scenarios': [
+                {
+                    'id': 'menu',
+                    'name': 'Меню',
+                    'text': 'Главное меню',
+                    'trigger': {'type': 'command', 'value': '/menu'},
+                    'inlineButtons': [
+                        {
+                            'id': 'sub1',
+                            'label': 'Каталог',
+                            'action': 'submenu',
+                            'text': 'Выберите товар:',
+                            'toast': 'Открыто',
+                            'submenu': [
+                                {'id': 'd1', 'label': 'Бросок', 'action': 'dice', 'diceEmoji': '🏀'},
+                                {'id': 'bk', 'label': 'Назад', 'action': 'back'},
+                            ],
+                        }
+                    ],
+                },
+                {'id': 'form', 'name': 'Запись', 'text': '', 'fsmFlowId': 'lead', 'trigger': {'type': 'command', 'value': '/lead'}},
+            ],
+            'buttons': [],
+        }
+        buttons, triggers, _, callbacks, fsm = compile_bot_full(bot)
+        self.assertIn('cb:0:0', callbacks)
+        self.assertIn('cb:0:0s:0', callbacks)
+        self.assertIn('cb:0:0s:1', callbacks)
+
+        r = Runtime(request)
+        stop = threading.Event()
+        kb = {'keyboard': [], 'resize_keyboard': True}
+        r.handle_update('t', {'update_id': 1, 'callback_query': {'id': 'cq1', 'from': {'id': 9, 'first_name': 'Оля'}, 'message': {'message_id': 55, 'chat': {'id': 9}}, 'data': 'cb:0:0'}}, buttons, triggers, kb, stop, callbacks, fsm)
+        r.handle_update('t', {'update_id': 2, 'callback_query': {'id': 'cq2', 'from': {'id': 9, 'first_name': 'Оля'}, 'message': {'message_id': 55, 'chat': {'id': 9}}, 'data': 'cb:0:0s:0'}}, buttons, triggers, kb, stop, callbacks, fsm)
+        r.handle_update('t', {'update_id': 3, 'callback_query': {'id': 'cq3', 'from': {'id': 9, 'first_name': 'Оля'}, 'message': {'message_id': 55, 'chat': {'id': 9}}, 'data': 'cb:0:0s:1'}}, buttons, triggers, kb, stop, callbacks, fsm)
+
+        methods = [m for m, _ in calls]
+        self.assertEqual(methods, ['answerCallbackQuery', 'editMessageText', 'answerCallbackQuery', 'sendDice', 'answerCallbackQuery', 'editMessageReplyMarkup'])
+
+        # FSM анкета с валидацией телефона и подстановкой
+        calls.clear()
+        for uid, msg_txt in enumerate(['/lead', 'Мария', '123', '+79991234567'], start=10):
+            r.handle_update('t', {'update_id': uid, 'message': {'chat': {'id': 99}, 'from': {'id': 99, 'first_name': 'Мария'}, 'text': msg_txt}}, buttons, triggers, kb, stop, callbacks, fsm)
+        sent_texts = [p['text'] for m, p in calls if m == 'sendMessage']
+        self.assertEqual(sent_texts, ['Как вас зовут?', 'Ваш телефон?', 'Введите корректный номер телефона (или /cancel).', 'Заявка принята: Мария, +79991234567'])
+
+    def test_android_py_full_import_and_export_roundtrip(self):
+        fixture = Path(__file__).resolve().parents[1] / 'tools' / 'import-fixtures' / 'demo-bot-coffee.py'
+        source = fixture.read_text(encoding='utf-8')
+        res = import_android_py(source)
+        bot = res['bot']
+        compile_bot_full(bot)
+        self.assertGreaterEqual(len(bot['scenarios']), 5)
+        self.assertGreaterEqual(len(bot['buttons']), 2)
+        self.assertTrue(any('get_today_schedule' in w for w in res['warnings']))
+        py_out = export_android_py(bot)
+        self.assertIn('@bot.message_handler', py_out)
+        self.assertNotIn('123:ABC', py_out)
+        reimported = import_android_py(py_out)
+        compile_bot_full(reimported['bot'])
+
+    def test_disk_store_backup_rotation_and_multibot(self):
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            store = BotDiskStore(tmp)
+            bot = {'format': 'botcontrol', 'version': 1, 'name': 'DiskBot', 'token': 'must-not-save', 'scenarios': [{'id': '1', 'name': 'S', 'text': 'Hi', 'trigger': {'type': 'command', 'value': '/hi'}}], 'buttons': []}
+            for _ in range(13):
+                store.save_bot('alpha', bot)
+            baks = list((tmp / 'bots' / 'backups').glob('alpha_*.bc'))
+            self.assertLessEqual(len(baks), BotDiskStore.MAX_BACKUPS)
+            saved_raw = (tmp / 'bots' / 'alpha.bc').read_text(encoding='utf-8')
+            self.assertNotIn('must-not-save', saved_raw)
+            self.assertEqual(len(store.list_bots()), 1)
+
+            mgr = MultiBotManager(Runtime())
+            st = mgr.statuses()
+            self.assertIn('default', st)
+            self.assertTrue(store.delete_bot('alpha'))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_shared_mock_telegram_contract_end_to_end(self):
+        mock_dir = Path(__file__).resolve().parents[1] / 'tools' / 'shared-telegram-mock'
+        sys.path.insert(0, str(mock_dir))
+        try:
+            from mock_telegram_server import MockTelegramState, start_mock_server
+            contract = json.loads((mock_dir / 'contract_updates.json').read_text(encoding='utf-8'))
+            state = MockTelegramState(expected_token='999:MOCKTOKEN')
+            state.enqueue_updates(contract['getUpdatesResponse']['result'])
+            srv, _, _ = start_mock_server(state)
+            try:
+                api_base = f'http://127.0.0.1:{srv.server_port}'
+                bot = {
+                    'scenarios': [
+                        {'id': 's1', 'name': 'Start', 'text': 'Привет, {user}!', 'trigger': {'type': 'command', 'value': '/start'}, 'inlineButtons': [{'id': 'i1', 'label': 'Детали', 'action': 'text', 'text': 'Открыты детали', 'toast': 'OK'}]},
+                        {'id': 's2', 'name': 'Help', 'text': 'Помощь здесь', 'trigger': {'type': 'command', 'value': '/help'}},
+                        {'id': 's3', 'name': 'Word', 'text': 'Нашёл кот', 'trigger': {'type': 'contains', 'value': 'кот'}},
+                        {'id': 's4', 'name': 'Order', 'text': 'Заказ принят', 'trigger': {'type': 'regex', 'value': r'^заказ\s+\d+$'}},
+                    ],
+                    'buttons': [],
+                }
+                rt = Runtime(api_base=api_base)
+                rt.start('999:MOCKTOKEN', bot)
+                deadline = time.time() + 5
+                while time.time() < deadline:
+                    sent = [c for c in state.calls if c['method'] == 'sendMessage']
+                    cbs = [c for c in state.calls if c['method'] == 'answerCallbackQuery']
+                    if len(sent) >= 4 and len(cbs) >= 1:
+                        break
+                    time.sleep(0.05)
+                rt.stop()
+                rt.thread.join(3)
+                sent_texts = [c['payload']['text'] for c in state.calls if c['method'] == 'sendMessage']
+                self.assertIn('Привет, Алиса!', sent_texts)
+                self.assertIn('Помощь здесь', sent_texts)
+                self.assertIn('Заказ принят', sent_texts)
+                self.assertIn('Открыты детали', sent_texts)
+                # «скот и стадо» не должно сработать на «кот»
+                self.assertNotIn('Нашёл кот', sent_texts)
+            finally:
+                srv.shutdown()
+                srv.server_close()
+        finally:
+            if str(mock_dir) in sys.path:
+                sys.path.remove(str(mock_dir))
+
+    def test_diagnostics_and_localhost_post(self):
+        srv = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        try:
+            conn = http.client.HTTPConnection('127.0.0.1', srv.server_port, timeout=3)
+            conn.request('GET', '/api/diagnostics', headers={'Host': f'localhost:{srv.server_port}'})
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            conn.close()
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(body['app'], 'BotControl Desktop')
+            # POST от localhost:port теперь также принимается
+            conn2 = http.client.HTTPConnection('127.0.0.1', srv.server_port, timeout=3)
+            conn2.request('POST', '/api/stop', '{}', headers={
+                'Host': f'localhost:{srv.server_port}',
+                'Origin': f'http://localhost:{srv.server_port}',
+                'Content-Type': 'application/json',
+            })
+            self.assertEqual(conn2.getresponse().status, 200)
+            conn2.close()
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            th.join()
 
 
 if __name__ == '__main__': unittest.main()

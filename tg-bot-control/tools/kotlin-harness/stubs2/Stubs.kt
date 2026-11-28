@@ -7,6 +7,7 @@ class LocalBotStore {
     var packList: List<ReplyPack> = emptyList()
     var clarifyList: List<String> = emptyList()
     var keyboardList: List<String> = emptyList()
+    var kbOptions: KeyboardOptions = KeyboardOptions()
     var events: List<ScheduleEvent> = emptyList()
     var cooldown = 10
     /** Мультибот (тест изоляции): профили и расписание по botId. */
@@ -26,6 +27,7 @@ class LocalBotStore {
     suspend fun packs(): List<ReplyPack> = packList
     suspend fun clarifyQuestions(botId: Long = -1L): List<String> = clarifyList
     suspend fun keyboard(botId: Long = -1L): List<String> = keyboardList
+    suspend fun keyboardOptions(botId: Long = -1L): KeyboardOptions = kbOptions
     suspend fun schedule(botId: Long = -1L): List<ScheduleEvent> = eventsByBot[botId] ?: events
 }
 
