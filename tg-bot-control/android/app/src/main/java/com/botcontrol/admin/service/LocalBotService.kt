@@ -713,17 +713,13 @@ class LocalBotService : Service() {
                         continue
                     }
                     var markDone = true
+                    val postText = e.pickVariant(cal.get(Calendar.DAY_OF_YEAR))
                     if (e.toChannel) {
                         // Пост в канал публикаций (например, дайджест 10:20/20:40).
                         val channel = store.channelId(botId)
                         if (channel.isBlank()) {
                             BotLog.log(botId, "⚠️ Событие ${e.timeLabel()} в канал, но канал не задан")
                         } else {
-                            val variants = e.text.split(" | ").map { it.trim() }
-                                .filter { it.isNotBlank() }
-                            val dayIdx = cal.get(Calendar.DAY_OF_YEAR)
-                            val postText = if (variants.isEmpty()) e.text
-                                else variants[dayIdx % variants.size]
                             val res = api.sendTo(channel, postText, e.menu.withIds())
                             if (res.isSuccess) {
                                 BotLog.log(botId, "📢 Пост в канал $channel: ${postText.take(60)}")
@@ -742,9 +738,9 @@ class LocalBotService : Service() {
                         }
                     } else {
                         withTyping(api, store, botId, chatId)
-                        val res = api.sendMessage(chatId, e.text, inlineMenu = e.menu.withIds())
+                        val res = api.sendMessage(chatId, postText, inlineMenu = e.menu.withIds())
                         if (res.isSuccess) {
-                            BotLog.log(botId, "⏰ Напоминание ${e.timeLabel()}: ${e.text.take(60)}")
+                            BotLog.log(botId, "⏰ Напоминание ${e.timeLabel()}: ${postText.take(60)}")
                         } else {
                             val err = res.exceptionOrNull()
                             val apiErr = err as? TelegramApiException

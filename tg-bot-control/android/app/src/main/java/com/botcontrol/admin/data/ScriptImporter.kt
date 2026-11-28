@@ -60,6 +60,7 @@ object ScriptImporter {
         val channel: String? = null,
         val listingsOn: Boolean? = null,
         val warnings: List<String> = emptyList(),
+        val libraryPackNames: Map<String, String> = emptyMap(),
     ) {
         val commands: List<ImportedRule> get() = rules.filter { it.type == "command" }
         val textRules: List<ImportedRule> get() = rules.filter { it.type != "command" }
@@ -134,7 +135,8 @@ object ScriptImporter {
                 else -> "Содержит «${r.pattern}»"
             }
             val act = when (r.actionType) {
-                "pack" -> "случайное из ${r.packId.removePrefix("imp_")}"
+                "pack" -> "случайное из " + (libraryPackNames[r.packId]?.let { "«$it» (библиотека)" }
+                    ?: r.packId.removePrefix("imp_"))
                 "llm" -> "ответ ИИ"
                 "script" -> "скрипт JS"
                 "anim" -> "анимация: " + Anim.describe(Anim.decode(r.script))
@@ -157,7 +159,8 @@ object ScriptImporter {
     const val SEC_CHANNEL = "channel"
 
     /** Главная точка входа: текст исходника → найденные настройки. */
-    fun parse(source: String): Parsed = Parser(decodeEntities(source)).run()
+    fun parse(source: String, existingPacks: List<ReplyPack> = emptyList()): Parsed =
+        Parser(decodeEntities(source), existingPacks).run()
 
     /**
      * Код, скопированный из браузера/мессенджера, часто приходит с
@@ -190,7 +193,10 @@ object ScriptImporter {
 // Разбор
 // ======================================================================
 
-private class Parser(source: String) {
+private class Parser(
+    source: String,
+    private val existingPacks: List<ReplyPack> = emptyList(),
+) {
     private val src = PySource(source)
     private val t = src.text
     private val warnings = LinkedHashSet<String>()
@@ -207,12 +213,14 @@ private class Parser(source: String) {
     private data class Keyboard(val inline: Boolean, val rows: List<List<KbButton>>)
 
     private val packHelpers = HashMap<String, String>()
-    /** Функции-помощники анимации: цикл + edit_message_text внутри. */
-    private val animHelpers = HashSet<String>()
+    /** Функции-помощники анимации: встроенный play_animation + цикл с edit_message_text. */
+    private val animHelpers = HashSet<String>(setOf("play_animation"))
     private val animEditFns = setOf("edit_message_text", "edit_message_media", "edit_message_caption")
     private val helpers = HashMap<String, Helper>()
     private val keyboards = LinkedHashMap<String, Keyboard>()
     private val attachedKeyboards = HashSet<String>()
+    private val libPackRefs = LinkedHashMap<String, ReplyPack>()
+    private val libPackNames = HashMap<String, String>()
 
     private data class Branch(val func: PySource.PyFunc, val lines: List<PySource.LLine>, val inline: IntRange?)
     private val cbBranches = LinkedHashMap<String, Branch>()
@@ -261,11 +269,29 @@ private class Parser(source: String) {
                     }
                 }
                 val base = ruleFromAction(act, menu)
+                val addedPatterns = ArrayList<String>()
                 d.commands.forEach { cmd ->
-                    if (seenCommands.add(cmd)) rules.add(base.copy(type = "command", pattern = "/$cmd"))
+                    if (seenCommands.add(cmd)) {
+                        rules.add(base.copy(type = "command", pattern = "/$cmd"))
+                        addedPatterns.add("/$cmd")
+                    }
                 }
-                d.buttons.forEach { label -> rules.add(base.copy(type = "button", pattern = label)) }
-                d.contains.forEach { word -> rules.add(base.copy(type = "contains", pattern = word)) }
+                d.buttons.forEach { label ->
+                    rules.add(base.copy(type = "button", pattern = label))
+                    addedPatterns.add("«$label»")
+                }
+                d.contains.forEach { word ->
+                    rules.add(base.copy(type = "contains", pattern = word))
+                    addedPatterns.add("«$word»")
+                }
+                if (addedPatterns.isNotEmpty() && base.actionType == "text" && base.text.isBlank()) {
+                    val hint = if (act.kind == "none") {
+                        "ответ не распознан (действие «пусто»; если используете свою функцию анимации, объявите def с циклом и edit_message_text)"
+                    } else {
+                        "текст ответа пуст"
+                    }
+                    warnings.add("Обработчик ${f.name}() (${addedPatterns.joinToString(", ")}): $hint — правило будет пропущено при применении")
+                }
             }
         }
         // старая грамматика: def cmd_xxx без декоратора
@@ -276,7 +302,11 @@ private class Parser(source: String) {
             if (!seenCommands.add(cmd)) continue
             val act = analyze(f, f.body, f.inlineBody)
             val (menu, _) = splitMarkup(act.markup, f.name)
-            rules.add(ruleFromAction(act, menu).copy(type = "command", pattern = "/$cmd"))
+            val rule = ruleFromAction(act, menu).copy(type = "command", pattern = "/$cmd")
+            rules.add(rule)
+            if (rule.actionType == "text" && rule.text.isBlank()) {
+                warnings.add("Команда ${f.name}() (/$cmd): текст/действие не распознано — правило будет пропущено при применении")
+            }
         }
         // JS / прочее: только имена команд
         val jsCommands = LinkedHashSet<String>()
@@ -312,21 +342,63 @@ private class Parser(source: String) {
 
         val clarifyName = listOf("CLARIFY_QUESTIONS", "CLARIFY").firstOrNull { it in listConsts }
             ?: listConsts.keys.firstOrNull { it.startsWith("CLARIFY") }
+        val rawClarify = clarifyName?.let { listConsts[it] }.orEmpty()
+        if (rawClarify.size > 50) {
+            warnings.add("ℹ️ $clarifyName обрезан до лимита: было ${rawClarify.size}, сохранено 50")
+        }
+        val clarify = rawClarify.take(50)
         val packs = listConsts.filter { (name, items) ->
             name != clarifyName && (name in referencedPacks ||
                 (items.size >= 2 && name.lowercase() !in ScriptImporter.SERVICE_LIST_NAMES &&
                     name == name.uppercase() && name !in animFrameNames &&
                     !name.startsWith("ANIM_") && !name.endsWith("_FRAMES")))
         }.map { (name, items) ->
-            ReplyPack(id = "imp_$name", name = listTitles[name] ?: ScriptImporter.humanize(name),
-                items = items.take(500))
+            val title = listTitles[name] ?: ScriptImporter.humanize(name)
+            if (items.size > 500) {
+                warnings.add("ℹ️ Набор «$title» ($name) обрезан до лимита: было ${items.size}, сохранено 500")
+            }
+            ReplyPack(id = "imp_$name", name = title, items = items.take(500))
         }
         referencedPacks.filter { it !in listConsts }.forEach {
             warnings.add("Набор $it используется кнопкой/правилом, но список не найден")
         }
+        libPackRefs.forEach { (name, pack) ->
+            warnings.add("ℹ️ Набор $name не задан в коде — взят из библиотеки бота «${pack.name}» (${pack.items.size} фраз)")
+        }
 
-        val prompt = (moduleExprs["SYSTEM_PROMPT"] as? PyExpr.Str)?.value?.trim()?.ifBlank { null }
+        val rawKbRows = chatKb?.kb?.rows.orEmpty()
+        val totalKbBtns = rawKbRows.sumOf { it.size }
+        if (totalKbBtns > 12) {
+            warnings.add("ℹ️ Клавиатура чата обрезана до лимита: было $totalKbBtns кнопок, сохранено 12")
+        }
+        val keyboardRows = ArrayList<List<String>>()
+        var kbCount = 0
+        for (row in rawKbRows) {
+            if (kbCount >= 12) break
+            val outRow = ArrayList<String>()
+            for (btn in row) {
+                if (kbCount >= 12) break
+                val rawLabel = btn.label
+                if (rawLabel.length > 32) {
+                    warnings.add("ℹ️ Кнопка клавиатуры «${rawLabel.take(20)}…» обрезана до лимита: было ${rawLabel.length} симв., сохранено 32")
+                }
+                val trimmed = rawLabel.take(32)
+                if (trimmed.isNotBlank()) {
+                    outRow.add(trimmed)
+                    kbCount++
+                }
+            }
+            if (outRow.isNotEmpty()) keyboardRows.add(outRow)
+        }
+
+        val promptRaw = (moduleExprs["SYSTEM_PROMPT"] as? PyExpr.Str)?.value?.trim()?.ifBlank { null }
             ?: legacyPrompt()
+        val prompt = promptRaw?.let {
+            if (it.length > 16000) {
+                warnings.add("ℹ️ SYSTEM_PROMPT обрезан до лимита: было ${it.length} симв., сохранено 16000")
+            }
+            it.take(16000)
+        }
 
         return ScriptImporter.Parsed(
             systemPrompt = prompt,
@@ -342,17 +414,17 @@ private class Parser(source: String) {
                 """DEFAULT_TYPING_SECONDS\s*=\s*(\d+)""",
                 """install_typing_plugin\([^)]*seconds\s*=\s*(\d+)""",
                 """(?<![\w.])TYPING_SECONDS\s*=\s*(\d+)""")),
-            clarify = clarifyName?.let { listConsts[it] }.orEmpty(),
+            clarify = clarify,
             packs = packs,
             schedule = schedule,
             rules = rules,
             menuCommands = menuCommands(rules),
-            keyboardRows = chatKb?.kb?.rows?.map { row -> row.map { it.label.take(32) } }
-                ?.filter { it.isNotEmpty() }.orEmpty(),
+            keyboardRows = keyboardRows,
             channel = channelSetting(),
             listingsOn = listOf("LISTINGS_MODE", "LISTINGS_ON", "LISTINGS")
                 .firstNotNullOfOrNull { (moduleExprs[it] as? PyExpr.Const)?.value },
             warnings = warnings.toList(),
+            libraryPackNames = libPackNames.toMap(),
         )
     }
 
@@ -867,6 +939,40 @@ private class Parser(source: String) {
         return Action(kind = "none", toast = toast)
     }
 
+    private fun exportConstLike(p: ReplyPack): String = when {
+        p.name.contains("Шутки") -> "JOKES"
+        p.name.contains("покурил", ignoreCase = true) -> "SMOKE_DONE_SARCASM"
+        p.name.contains("здоров", ignoreCase = true) -> "SMOKE_HEALTHY_SARCASM"
+        else -> {
+            val latin = p.name.replace(Regex("[^A-Za-z0-9]+"), "_").trim('_').uppercase()
+            if (latin.isNotBlank() && latin.first().isLetter()) latin
+            else "PACK_CUSTOM_${p.id.replace("-", "_").uppercase()}"
+        }
+    }
+
+    private fun resolveLibraryPack(constName: String): ReplyPack? {
+        if (constName.isBlank() || constName in listConsts || existingPacks.isEmpty()) return null
+        val humanBare = ScriptImporter.humanize(constName).removePrefix("📦 ").trim()
+        return existingPacks.firstOrNull { p ->
+            p.id.equals("pack_${constName.lowercase()}", ignoreCase = true) ||
+                p.id.equals(constName, ignoreCase = true)
+        } ?: existingPacks.firstOrNull { p ->
+            exportConstLike(p).equals(constName, ignoreCase = true)
+        } ?: existingPacks.firstOrNull { p ->
+            p.name.removePrefix("📦 ").trim().equals(humanBare, ignoreCase = true) ||
+                p.name.trim().equals(constName, ignoreCase = true)
+        }
+    }
+
+    private fun packIdFor(constName: String): String {
+        if (constName.isBlank()) return ""
+        if (constName in listConsts) return "imp_$constName"
+        val lib = resolveLibraryPack(constName) ?: return "imp_$constName"
+        libPackRefs[constName] = lib
+        libPackNames["lib:${lib.id}"] = lib.name
+        return "lib:${lib.id}"
+    }
+
     private fun resolveText(e: PyExpr?, f: PySource.PyFunc, depth: Int = 0): TextVal {
         if (e == null) return TextVal("none")
         if (depth > 5) return TextVal("unknown")
@@ -880,8 +986,9 @@ private class Parser(source: String) {
             is PyExpr.Call -> when {
                 e.shortFn == "choice" -> {
                     val arg = e.args.firstOrNull() as? PyExpr.Name
-                    if (arg != null && arg.id in listConsts) TextVal("pack", pack = arg.id)
-                    else TextVal("unknown")
+                    if (arg != null && (arg.id in listConsts || resolveLibraryPack(arg.id) != null)) {
+                        TextVal("pack", pack = arg.id)
+                    } else TextVal("unknown")
                 }
                 packHelpers[e.fn] != null -> TextVal("pack", pack = packHelpers[e.fn]!!)
                 helpers[e.fn]?.kind == Kind.LLM || llmNameRe.containsMatchIn(e.shortFn) -> TextVal("llm")
@@ -891,7 +998,8 @@ private class Parser(source: String) {
             else -> {
                 val m = src.maskedOf(e)
                 Regex("""choice\(\s*([A-Za-z_]\w*)\s*\)""").find(m)?.let { mm ->
-                    if (mm.groupValues[1] in listConsts) return TextVal("pack", pack = mm.groupValues[1])
+                    val name = mm.groupValues[1]
+                    if (name in listConsts || resolveLibraryPack(name) != null) return TextVal("pack", pack = name)
                 }
                 Regex("""([A-Za-z_]\w*)\s*\(""").findAll(m).forEach { mm ->
                     val name = mm.groupValues[1]
@@ -935,7 +1043,7 @@ private class Parser(source: String) {
             },
             text = if (a.kind == "text" || a.kind == "none" || a.kind == "on" || a.kind == "off" ||
                 a.kind == "dice") a.text else "",
-            packId = if (a.kind == "pack") "imp_${a.pack}" else "",
+            packId = if (a.kind == "pack") packIdFor(a.pack) else "",
             script = if (a.kind == "anim" && a.anim != null) Anim.encode(a.anim) else a.script,
             menu = menu,
         )
@@ -955,6 +1063,9 @@ private class Parser(source: String) {
         val out = ArrayList<InlineBtn>()
         kb.rows.forEachIndexed { r, row ->
             row.forEach { b ->
+                if (b.label.length > 64) {
+                    warnings.add("ℹ️ Надпись inline-кнопки «${b.label.take(20)}…» обрезана: было ${b.label.length} симв., сохранено 64")
+                }
                 val label = b.label.take(64)
                 if (b.url != null) {
                     val slug = label.filter { it.isLetterOrDigit() }.take(12).lowercase()
@@ -994,7 +1105,7 @@ private class Parser(source: String) {
                         action = if (act.kind == "on") "reminders_on" else "reminders_off",
                         text = act.text, toastNoChange = act.toastNoChange, row = r + 1)
                     "pack" -> InlineBtn(id = id, label = label, toast = act.toast, action = "pack",
-                        packId = "imp_${act.pack}", edit = act.edit, row = r + 1)
+                        packId = packIdFor(act.pack), edit = act.edit, row = r + 1)
                     "script" -> InlineBtn(id = id, label = label, toast = act.toast, action = "script",
                         script = act.script, row = r + 1)
                     "anim" -> InlineBtn(id = id, label = label, toast = act.toast, action = "anim",
@@ -1005,10 +1116,21 @@ private class Parser(source: String) {
                         warnings.add("Кнопка «$label» отвечает через ИИ — для кнопок это пока не поддерживается, задай текст")
                         InlineBtn(id = id, label = label, toast = act.toast, action = "text", row = r + 1)
                     }
+                    "none" -> {
+                        if (act.text.isBlank() && act.toast.isBlank() && act.markup == null) {
+                            warnings.add("Кнопка «$label» (callback_data=\"$id\"): действие внутри ветки не распознано (возможно не определён helper)")
+                        }
+                        InlineBtn(id = id, label = label, toast = act.toast, action = "text",
+                            text = act.text, edit = act.edit, row = r + 1)
+                    }
                     else -> InlineBtn(id = id, label = label, toast = act.toast, action = "text",
                         text = act.text, edit = act.edit, row = r + 1)
                 })
             }
+        }
+        if (out.size > 12 || kb.rows.size > 8) {
+            val menuName = ownerFn?.let { "$it()" } ?: "меню"
+            warnings.add("ℹ️ $menuName: кнопок ${out.size} (${kb.rows.size} рядов) — редактор UI ограничивает до 12 кнопок / 8 рядов")
         }
         return out
     }
@@ -1043,11 +1165,11 @@ private class Parser(source: String) {
             .let { (it as? PyExpr.Num)?.value }
         var final: String? = strOf(c.kwargs["final"] ?: c.kwargs["final_text"], f)
         val text: String = strOf(c.kwargs["text"] ?: c.kwargs["label"], f).orEmpty()
-        val loops = ((c.kwargs["loops"] ?: c.kwargs["repeat"]) as? PyExpr.Num)?.value?.toInt() ?: 1
+        val loopsRaw = ((c.kwargs["loops"] ?: c.kwargs["repeat"]) as? PyExpr.Num)?.value?.toInt() ?: 1
         // pack=НАБОР — финал из набора (слот-машина); mono=True — моноширинно
         val packId = when (val pk = c.kwargs["pack"]) {
-            is PyExpr.Name -> "imp_${pk.id}"
-            is PyExpr.Str -> pk.value.trim().takeIf { it.isNotBlank() }?.let { "imp_$it" }
+            is PyExpr.Name -> packIdFor(pk.id)
+            is PyExpr.Str -> pk.value.trim().takeIf { it.isNotBlank() }?.let(::packIdFor)
             else -> null
         }.orEmpty()
         val monoKw = (c.kwargs["mono"] as? PyExpr.Const)?.value
@@ -1064,13 +1186,24 @@ private class Parser(source: String) {
         }
         if (frames.isNullOrEmpty() && preset == null) return null
         val base = Anim.preset(preset ?: "custom")
+        if (delay != null && (delay < 0.5 || delay > 3.0)) {
+            warnings.add("ℹ️ Анимация: пауза $delay с скорректирована в диапазон 0.5–3.0 с")
+        }
+        if (loopsRaw < 1 || loopsRaw > 10) {
+            warnings.add("ℹ️ Анимация: повторов $loopsRaw ограничено до диапазона 1–10")
+        }
+        val loops = loopsRaw.coerceIn(1, 10)
+        val normFrames = frames.orEmpty().map { normalizeText(it) }
+        if ((preset ?: "custom") == "custom" && normFrames.size * loops > Anim.MAX_FRAMES) {
+            warnings.add("ℹ️ Анимация: кадров ${normFrames.size * loops} — при проигрывании обрежется до лимита ${Anim.MAX_FRAMES}")
+        }
         val spec = AnimSpec(
             preset = preset ?: "custom",
             text = text.ifBlank { if (preset != null) base.defaultText else "" },
-            frames = frames.orEmpty().map { normalizeText(it) },
+            frames = normFrames,
             intervalMs = ((delay ?: (base.defaultInterval / 1000.0)) * 1000).toInt()
                 .coerceIn(Anim.MIN_INTERVAL, Anim.MAX_INTERVAL),
-            loops = loops.coerceIn(1, 10),
+            loops = loops,
             finalText = final?.let { normalizeText(it) }.orEmpty(),
             mono = monoKw ?: if (preset != null) base.mono else frames.orEmpty().let { fr ->
                 fr.any { '\n' in it } && fr.none { Anim.photoSrc(it) != null } // фото-кадры — подписи, не ASCII
@@ -1319,10 +1452,14 @@ private class Parser(source: String) {
                 out.add(MenuCommand(cmd, desc.ifBlank { defaultDescription(cmd, rules) }))
             }
         }
-        if (out.isNotEmpty()) return out.distinctBy { it.command }
-        return rules.filter { it.type == "command" }.map { it.pattern.removePrefix("/") }
+        val list = if (out.isNotEmpty()) out.distinctBy { it.command }
+        else rules.filter { it.type == "command" }.map { it.pattern.removePrefix("/") }
             .filter { Regex("^[a-z0-9_]{1,32}$").matches(it) }
             .map { MenuCommand(it, defaultDescription(it, rules)) }
+        if (list.size > 20) {
+            warnings.add("ℹ️ Меню команд Telegram обрезано до лимита: было ${list.size}, передаётся 20")
+        }
+        return list.take(20)
     }
 
     private fun defaultDescription(cmd: String, rules: List<ScriptImporter.ImportedRule>): String =
