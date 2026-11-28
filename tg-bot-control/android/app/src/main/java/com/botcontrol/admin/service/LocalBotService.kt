@@ -628,7 +628,7 @@ class LocalBotService : Service() {
         val resolvedThreadId = ModerationPolicy.resolveThreadId(
             ruleTargetThreadId = opts.targetThreadId,
             incomingThreadId = msg.messageThreadId,
-            defaultModThreadId = mod.defaultThreadId,
+            defaultGroupThreadId = mod.defaultThreadId,
             isGroupChat = isGroup,
         )
         if (opts.autoReactEmoji.isNotBlank() && msg.messageId > 0) {
