@@ -79,16 +79,21 @@ data class ScheduleEvent(
     val parseMode: String = "",
     /** id топика форума супергруппы (если отправка в конкретную тему). */
     val threadId: Int? = null,
+    /** Одноразовая дата отправки "YYYY-MM-DD" (пусто = обычное повторение по дням недели). */
+    val onceDate: String = "",
 ) {
     fun timeLabel(): String = "%02d:%02d".format(hour, minute)
 
-    fun daysLabel(): String = when (days.sorted().joinToString("")) {
-        "1234567" -> "ежедневно"
-        "12345" -> "будни"
-        "67" -> "выходные"
-        else -> days.sorted()
-            .map { DAY_NAMES.getOrElse(it - 1) { "?" } }
-            .joinToString(", ")
+    fun daysLabel(): String {
+        if (onceDate.isNotBlank()) return "разово $onceDate"
+        return when (days.sorted().joinToString("")) {
+            "1234567" -> "ежедневно"
+            "12345" -> "будни"
+            "67" -> "выходные"
+            else -> days.sorted()
+                .map { DAY_NAMES.getOrElse(it - 1) { "?" } }
+                .joinToString(", ")
+        }
     }
 
     /** Вариант текста при чередовании через « | » по номеру дня в году. */
@@ -145,12 +150,15 @@ data class RuleOptions(
     val pollAnonymous: Boolean = true,
     val pollMultiple: Boolean = false,
     val removeKeyboard: Boolean = false,
+    val adminOnly: Boolean = false,
+    val requiredRole: String = "",     // "" | "vip" | "admin"
+    val skipSubCheck: Boolean = false, // разрешить без проверки подписки на канал
 ) {
     val isDefault: Boolean
         get() = parseMode.isBlank() && !disablePreview && !silent && !protectContent &&
             !replyTo && !wholeWord && mediaType.isBlank() && mediaRef.isBlank() &&
             pollQuestion.isBlank() && pollOptions.isEmpty() && pollAnonymous &&
-            !pollMultiple && !removeKeyboard
+            !pollMultiple && !removeKeyboard && !adminOnly && requiredRole.isBlank() && !skipSubCheck
 }
 
 /** Настройки Reply-клавиатуры внизу чата. */
@@ -196,6 +204,14 @@ object BotJson {
 
     fun stringList(json: String): List<String> =
         load(json, object : TypeToken<List<String>>() {}, emptyList())
+
+    fun stringMap(json: String): Map<String, String> =
+        if (json.isBlank() || json == "{}") emptyMap()
+        else load(json, object : TypeToken<Map<String, String>>() {}, emptyMap())
+
+    fun fsmList(json: String): List<FsmFlow> =
+        if (json.isBlank()) emptyList()
+        else load(json, object : TypeToken<List<FsmFlow>>() {}, emptyList())
 
     fun scheduleList(json: String): List<ScheduleEvent> =
         load(json, object : TypeToken<List<ScheduleEvent>>() {}, emptyList())
@@ -301,6 +317,7 @@ object BotMatcher {
         ctx: MessageCtx,
         botUsername: String = "",
         nowMs: Long = System.currentTimeMillis(),
+        vars: Map<String, String> = emptyMap(),
     ): String {
         if (!template.contains('{')) return template
         val argsRaw = extractCommandArgsRaw(ctx.text)
@@ -326,6 +343,12 @@ object BotMatcher {
             .replace("{arg1}", args.getOrElse(0) { "" })
             .replace("{arg2}", args.getOrElse(1) { "" })
             .replace("{arg3}", args.getOrElse(2) { "" })
+
+        if (vars.isNotEmpty() && out.contains('{')) {
+            vars.forEach { (k, v) ->
+                if (k.isNotBlank()) out = out.replace("{$k}", v)
+            }
+        }
 
         if (out.contains("{date}") || out.contains("{time}")) {
             val d = Date(nowMs)
@@ -425,3 +448,176 @@ data class Listing(
     val createdAt: Long = 0L,
     val status: String = "active",    // active | taken
 )
+
+/** Шаг пошагового диалога (FSM: анкеты, заявки, заказы, квизы). */
+data class FsmStep(
+    val id: String = "",
+    val prompt: String = "",
+    /** Тип ожидаемого ответа: text | number | phone | photo | location | button | any */
+    val inputType: String = "text",
+    /** Имя переменной {var}, в которую сохраняется ввод пользователя. */
+    val varName: String = "answer",
+    /** Варианты кнопок для inputType == "button" (или подсказок). */
+    val choices: List<String> = emptyList(),
+    /** Сообщение при неверном формате ответа. */
+    val errorText: String = "",
+    /** Следующий id шага (пусто = по порядку; "DONE" = завершить). */
+    val nextStepId: String = "",
+    /** Ветвление: значение ответа -> id следующего шага или "DONE". */
+    val branchMap: Map<String, String> = emptyMap(),
+)
+
+/** Пошаговый сценарий (FSM-поток). */
+data class FsmFlow(
+    val id: String = "",
+    val name: String = "",
+    val triggerType: String = "command",  // command | button | contains
+    val triggerPattern: String = "/form",
+    val enabled: Boolean = true,
+    val steps: List<FsmStep> = emptyList(),
+    val finishText: String = "✅ Анкета отправлена! Спасибо, {user}.",
+    /** Куда отправлять итог: "" (никуда) | "admins" | "channel" | "both". */
+    val notifyTarget: String = "admins",
+    val summaryTemplate: String = "",
+)
+
+/** Результат проверки ответа пользователя на шаге FSM. */
+data class FsmValidationResult(
+    val ok: Boolean,
+    val value: String = "",
+    val error: String = "",
+)
+
+/** Валидация ввода и построение итоговой сводки FSM (чистый Kotlin, без Android SDK). */
+object FsmValidator {
+    private val phoneRe = Regex("^[+]?[\\d\\s\\-()]{7,20}$")
+
+    fun validate(
+        step: FsmStep,
+        text: String,
+        kind: String = "",
+        photoId: String = "",
+        fileId: String = "",
+        locationLat: Double? = null,
+        locationLon: Double? = null,
+        contactPhone: String = "",
+    ): FsmValidationResult {
+        val t = text.trim()
+        return when (step.inputType.lowercase()) {
+            "number" -> {
+                val norm = t.replace(',', '.')
+                if (norm.toDoubleOrNull() != null) FsmValidationResult(true, norm)
+                else FsmValidationResult(false, error = step.errorText.ifBlank { "Введите число (например: 3 или 12.5)." })
+            }
+            "phone" -> {
+                val p = contactPhone.trim().ifBlank { t }
+                if (phoneRe.matches(p)) FsmValidationResult(true, p)
+                else FsmValidationResult(false, error = step.errorText.ifBlank { "Укажите корректный номер телефона (например: +7 999 123-45-67)." })
+            }
+            "photo" -> {
+                val pid = photoId.ifBlank { if (kind == "фото") fileId else "" }
+                if (pid.isNotBlank()) FsmValidationResult(true, pid)
+                else FsmValidationResult(false, error = step.errorText.ifBlank { "Пожалуйста, отправьте фотографию." })
+            }
+            "location" -> {
+                if (locationLat != null && locationLon != null) {
+                    FsmValidationResult(true, "$locationLat,$locationLon")
+                } else {
+                    FsmValidationResult(false, error = step.errorText.ifBlank { "Отправьте геопозицию (скрепка → Локация)." })
+                }
+            }
+            "button" -> {
+                if (step.choices.isEmpty()) {
+                    if (t.isNotBlank()) FsmValidationResult(true, t)
+                    else FsmValidationResult(false, error = step.errorText.ifBlank { "Выберите один из вариантов." })
+                } else {
+                    val matched = step.choices.firstOrNull { it.equals(t, ignoreCase = true) }
+                    if (matched != null) FsmValidationResult(true, matched)
+                    else FsmValidationResult(false, error = step.errorText.ifBlank { "Нажмите одну из кнопок: ${step.choices.joinToString(", ")}" })
+                }
+            }
+            "any" -> {
+                val v = t.ifBlank { fileId.ifBlank { photoId } }
+                if (v.isNotBlank()) FsmValidationResult(true, v)
+                else FsmValidationResult(false, error = step.errorText.ifBlank { "Отправьте сообщение или вложение." })
+            }
+            else -> {
+                if (t.isNotBlank() && kind.isBlank()) FsmValidationResult(true, t.take(2000))
+                else if (t.isNotBlank()) FsmValidationResult(true, t.take(2000))
+                else FsmValidationResult(false, error = step.errorText.ifBlank { "Пожалуйста, напишите ответ текстом." })
+            }
+        }
+    }
+
+    fun nextStepIndex(flow: FsmFlow, currentIndex: Int, value: String): Int? {
+        val cur = flow.steps.getOrNull(currentIndex) ?: return null
+        val branch = cur.branchMap.entries.firstOrNull { it.key.equals(value.trim(), ignoreCase = true) }?.value
+            ?: cur.nextStepId.takeIf { it.isNotBlank() }
+        if (branch != null) {
+            if (branch.equals("DONE", ignoreCase = true)) return null
+            val idx = flow.steps.indexOfFirst { it.id == branch }
+            if (idx >= 0) return idx
+        }
+        val nxt = currentIndex + 1
+        return if (nxt < flow.steps.size) nxt else null
+    }
+
+    fun buildSummary(
+        flow: FsmFlow,
+        ctx: MessageCtx,
+        collected: Map<String, String>,
+        botUsername: String = "",
+    ): String {
+        if (flow.summaryTemplate.isNotBlank()) {
+            return BotMatcher.expandPlaceholders(flow.summaryTemplate, ctx, botUsername, vars = collected)
+        }
+        val sb = StringBuilder("📋 Новая заявка: ${flow.name}\n")
+        val who = buildString {
+            append(ctx.firstName.ifBlank { "Пользователь" })
+            if (ctx.username.isNotBlank()) append(" (@${ctx.username.removePrefix("@")})")
+            append(" [id:${if (ctx.userId != 0L) ctx.userId else ctx.chatId}]")
+        }
+        sb.append("👤 От: ").append(who).append('\n')
+        flow.steps.forEach { st ->
+            val v = collected[st.varName].orEmpty()
+            if (v.isNotBlank()) {
+                val label = st.varName
+                val shown = if (st.inputType == "photo") "[фото: ${v.take(18)}…]" else v
+                sb.append("• ").append(label).append(": ").append(shown).append('\n')
+            }
+        }
+        return sb.toString().trim()
+    }
+}
+
+/** Политика ролей, админов и подписки на обязательный канал. */
+object AccessPolicy {
+    private val subscribedStatuses = setOf("creator", "administrator", "member", "restricted")
+
+    fun parseAdminIds(raw: String): Set<Long> =
+        raw.split(Regex("[,;\\s]+"))
+            .mapNotNull { it.trim().toLongOrNull() }
+            .filter { it > 0L }
+            .toSet()
+
+    fun isAdmin(userId: Long, chatId: Long, userRole: String, adminIds: Set<Long>): Boolean =
+        userRole.equals("admin", ignoreCase = true) ||
+            (userId > 0L && userId in adminIds) ||
+            (chatId > 0L && chatId in adminIds)
+
+    fun canUseRule(opts: RuleOptions, isAdmin: Boolean, userRole: String): Boolean {
+        if (opts.adminOnly && !isAdmin) return false
+        val req = opts.requiredRole.trim().lowercase()
+        if (req.isBlank()) return true
+        if (isAdmin) return true
+        val role = userRole.trim().lowercase()
+        return when (req) {
+            "admin" -> role == "admin"
+            "vip" -> role == "vip" || role == "admin"
+            else -> role == req
+        }
+    }
+
+    fun isMemberSubscribed(status: String): Boolean =
+        status.trim().lowercase() in subscribedStatuses
+}

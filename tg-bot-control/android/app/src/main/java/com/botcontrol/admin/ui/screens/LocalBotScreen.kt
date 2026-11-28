@@ -182,7 +182,15 @@ fun LocalBotScreen(
                             "poll" -> "📊 опрос: ${ruleOpts.pollQuestion.ifBlank { rule.responseText }.take(35)}"
                             else -> "Ответ: ${rule.responseText.take(50)}"
                         }
-                        Text(actionLabel, style = MaterialTheme.typography.bodySmall)
+                        val accessBadge = buildList {
+                            if (ruleOpts.adminOnly) add("🛡 админ")
+                            if (ruleOpts.requiredRole.isNotBlank()) add("роль: ${ruleOpts.requiredRole}")
+                            if (ruleOpts.skipSubCheck) add("без подписки")
+                        }.joinToString(" · ")
+                        Text(
+                            actionLabel + if (accessBadge.isNotBlank()) " [$accessBadge]" else "",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                     if (rule.actionType == "script") {
                         TextButton(onClick = { onOpenScript(rule.id) }) { Text("✎ код") }
@@ -323,6 +331,9 @@ fun LocalBotScreen(
         var replyTo by remember { mutableStateOf(initOpts.replyTo) }
         var wholeWord by remember { mutableStateOf(initOpts.wholeWord) }
         var removeKeyboard by remember { mutableStateOf(initOpts.removeKeyboard) }
+        var adminOnly by remember { mutableStateOf(initOpts.adminOnly) }
+        var requiredRole by remember { mutableStateOf(initOpts.requiredRole) }
+        var skipSubCheck by remember { mutableStateOf(initOpts.skipSubCheck) }
         var mediaType by remember { mutableStateOf(initOpts.mediaType.ifBlank { "photo" }) }
         var mediaRef by remember { mutableStateOf(initOpts.mediaRef) }
         var pollQuestion by remember { mutableStateOf(initOpts.pollQuestion.ifBlank { initial?.responseText.orEmpty() }) }
@@ -332,7 +343,8 @@ fun LocalBotScreen(
         var showDeliveryOpts by remember {
             mutableStateOf(initOpts.parseMode.isNotBlank() || initOpts.disablePreview ||
                 initOpts.silent || initOpts.protectContent || initOpts.replyTo ||
-                initOpts.wholeWord || initOpts.removeKeyboard)
+                initOpts.wholeWord || initOpts.removeKeyboard ||
+                initOpts.adminOnly || initOpts.requiredRole.isNotBlank() || initOpts.skipSubCheck)
         }
         val regexValid = type != "regex" || runCatching { Regex(pattern) }.isSuccess
         LaunchedEffect(Unit) { packs = localStore.packs() }
@@ -524,6 +536,20 @@ fun LocalBotScreen(
                             Checkbox(checked = removeKeyboard, onCheckedChange = { removeKeyboard = it })
                             Text("Скрыть клавиатуру чата (ReplyKeyboardRemove)", style = MaterialTheme.typography.bodySmall)
                         }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = adminOnly, onCheckedChange = { adminOnly = it })
+                            Text("🛡 Только для администраторов", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = skipSubCheck, onCheckedChange = { skipSubCheck = it })
+                            Text("Разрешить без проверки подписки на канал", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text("Минимальная роль доступа:", style = MaterialTheme.typography.bodySmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("" to "Любая", "vip" to "VIP+", "admin" to "Админ").forEach { (r, lbl) ->
+                                FilterChip(selected = requiredRole == r, onClick = { requiredRole = r }, label = { Text(lbl) })
+                            }
+                        }
                     }
                     Spacer(Modifier.height(8.dp))
                     if (action != "llm") {
@@ -553,6 +579,9 @@ fun LocalBotScreen(
                                 pollAnonymous = pollAnon,
                                 pollMultiple = pollMulti,
                                 removeKeyboard = removeKeyboard,
+                                adminOnly = adminOnly,
+                                requiredRole = requiredRole,
+                                skipSubCheck = skipSubCheck,
                             )
                             val id = repository.saveBotRule(
                                 BotRuleEntity(

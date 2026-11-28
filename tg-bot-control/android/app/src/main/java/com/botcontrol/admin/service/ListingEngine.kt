@@ -1,11 +1,12 @@
 package com.botcontrol.admin.service
 
 import android.content.Context
+import com.botcontrol.admin.BotControlApp
+import com.botcontrol.admin.data.AccessPolicy
 import com.botcontrol.admin.data.BotFiles
 import com.botcontrol.admin.data.InlineBtn
 import com.botcontrol.admin.data.Listing
 import com.botcontrol.admin.data.LocalBotStore
-import com.botcontrol.admin.BotControlApp
 import com.botcontrol.admin.data.telegram.TelegramApi
 import com.botcontrol.admin.llm.DeviceLlm
 
@@ -59,6 +60,19 @@ object ListingEngine {
         chatId: Long,
         replyKeyboard: List<String>,
     ) {
+        val maxPerUser = store.listingMaxPerUser(botId)
+        if (maxPerUser > 0) {
+            val activeCount = store.listings(botId).count { it.chatId == chatId && it.status == "active" }
+            if (activeCount >= maxPerUser) {
+                api.sendMessage(
+                    chatId,
+                    "⚠️ Достигнут лимит активных объявлений ($activeCount из $maxPerUser).\n" +
+                        "Удали одно из старых в «📋 Мои объявления», чтобы разместить новое.",
+                    keyboard = menuWith(replyKeyboard),
+                )
+                return
+            }
+        }
         drafts[key(botId, chatId)] = Draft(state = State.DESC)
         api.sendMessage(
             chatId,
@@ -378,7 +392,9 @@ object ListingEngine {
             data.startsWith("lst_del_") -> {
                 val id = data.removePrefix("lst_del_")
                 val all = store.listings(botId)
-                val target = all.firstOrNull { it.id == id && it.chatId == chatId }
+                val adminIds = store.adminIds(botId)
+                val isAdmin = AccessPolicy.isAdmin(chatId, chatId, "", adminIds)
+                val target = all.firstOrNull { it.id == id && (it.chatId == chatId || isAdmin) }
                 if (target == null) {
                     api.answerCallbackQuery(callbackId, "Объявление не найдено")
                     return
@@ -397,6 +413,10 @@ object ListingEngine {
                     api.answerCallbackQuery(callbackId, "🗑 Удалено")
                     BotLog.log(botId, "🗑 Объявление ${target.id} удалено из канала (сообщ.: $removed)")
                     api.editMessageText(chatId, messageId, "🗑 Объявление удалено из канала.\n\nВыбери действие 👇")
+                    val note = "🗑 Объявление ${target.id} (${target.description.take(50)}) удалено пользователем $firstName [$chatId]."
+                    adminIds.filter { it != chatId }.forEach { adm ->
+                        api.sendMessage(adm, note)
+                    }
                 } else {
                     // Не удалось — объявление остаётся в списке с неудалёнными
                     // сообщениями, чтобы можно было повторить.
@@ -430,6 +450,32 @@ object ListingEngine {
                 )
                 publish(context, store, api, botId, chatId, firstName, d, replyKeyboard)
             }
+            data.startsWith("lst_editpic_") -> {
+                val id = data.removePrefix("lst_editpic_")
+                val all = store.listings(botId)
+                val target = all.firstOrNull { it.id == id && it.chatId == chatId }
+                if (target == null) {
+                    api.answerCallbackQuery(callbackId, "Объявление не найдено")
+                    return
+                }
+                api.answerCallbackQuery(callbackId, "Обновление фото")
+                drafts[k] = Draft(
+                    state = State.PHOTOS,
+                    description = target.description,
+                    contactType = target.contactType,
+                    contactValue = target.contactValue,
+                    photos = emptyList(),
+                    editingId = target.id,
+                )
+                api.sendMessage(
+                    chatId,
+                    "🖼 Новые фото для «${target.description.take(60)}».\n\nПришли от 0 до 3 фото, затем нажми «✅ Готово, к публикации».",
+                    inlineMenu = listOf(
+                        InlineBtn(label = "✅ Готово, к публикации", toast = "К предпросмотру", action = "lst_photos_done"),
+                        InlineBtn(label = BTN_CANCEL, toast = "Отмена", action = "lst_cancel"),
+                    ),
+                )
+            }
             data.startsWith("lst_edit_") -> {
                 val id = data.removePrefix("lst_edit_")
                 val all = store.listings(botId)
@@ -439,7 +485,13 @@ object ListingEngine {
                     return
                 }
                 api.answerCallbackQuery(callbackId, "Новое описание")
-                drafts[k] = Draft(state = State.DESC, editingId = target.id)
+                drafts[k] = Draft(
+                    state = State.DESC,
+                    contactType = target.contactType,
+                    contactValue = target.contactValue,
+                    photos = target.photos,
+                    editingId = target.id,
+                )
                 api.sendMessage(
                     chatId,
                     "✏️ Редактирование.\n\nПришли новое описание текстом (фото и контакт сохранятся):\n«${target.description.take(120)}»",
@@ -522,10 +574,21 @@ object ListingEngine {
         val messageIds = mutableListOf<Int>()
         var publishError = ""
         val media = d.photos.mapNotNull { name -> BotFiles.safe(context, botId, BotFiles.MEDIA, name) }
+        val useAlbum = store.listingUseAlbum(botId)
         if (media.isEmpty()) {
             // Текстовый пост без фото: сохраняем message_id — чтобы удалять.
             api.sendTo(channel, caption, listOfNotNull(authorBtn))
                 .onSuccess { mid -> if (mid > 0) messageIds.add(mid) }
+                .onFailure { publishError = it.message ?: "" }
+        } else if (media.size >= 2 && useAlbum) {
+            api.sendMediaGroup(channel, media.map { it.absolutePath }, caption = caption)
+                .onSuccess { mids ->
+                    messageIds.addAll(mids)
+                    if (authorBtn != null) {
+                        api.sendTo(channel, "👇 Контакт автора объявления:", listOf(authorBtn))
+                            .onSuccess { bid -> if (bid > 0) messageIds.add(bid) }
+                    }
+                }
                 .onFailure { publishError = it.message ?: "" }
         } else {
             media.forEachIndexed { i, f ->
@@ -610,27 +673,24 @@ object ListingEngine {
             sb.append("🎁 $short\n")
             sb.append("🟢 Опубликовано · фото: ${l.photos.size}\n\n")
         }
-        // кнопки: до 10 объявлений, по 2 действия на каждое
-        val buttons = all.sortedByDescending { it.createdAt }.take(10).flatMap { l ->
+        // кнопки: до 8 объявлений, по 4 действия в ряд (✏️ | 🖼 | 🔄 | 🗑)
+        val buttons = all.sortedByDescending { it.createdAt }.take(8).flatMapIndexed { idx, l ->
+            val r = idx + 1
             listOf(
-                InlineBtn(label = "🔄 ${l.description.take(12)}", toast = "Переопубликовать", action = "lst_rep_${l.id}"),
-                InlineBtn(label = "🗑 ${l.description.take(12)}", toast = "Удалить из канала", action = "lst_del_${l.id}"),
+                InlineBtn(label = "✏️ ${l.description.take(8)}", toast = "Изменить текст", action = "lst_edit_${l.id}", row = r),
+                InlineBtn(label = "🖼 Фото", toast = "Изменить фото", action = "lst_editpic_${l.id}", row = r),
+                InlineBtn(label = "🔄", toast = "Переопубликовать", action = "lst_rep_${l.id}", row = r),
+                InlineBtn(label = "🗑", toast = "Удалить из канала", action = "lst_del_${l.id}", row = r),
             )
         }
         api.sendMessage(
             chatId,
             sb.toString(),
-            inlineMenu = buttons.chunked(2).flatten().let { flat ->
-                // по 2 кнопки в ряд: 🔄 | 🗑
-                flat.chunked(2)
-            }.flatten().let { buttons2 ->
-                buttons2
-            }.let { buttons },
-            // порядок ниже поправлен: используем rows
+            inlineMenu = buttons,
         )
         api.sendMessage(
             chatId,
-            "🔄 — опубликовать снова, 🗑 — удалить из канала. Или «📝 Разместить объявление» 👇",
+            "✏️ текст · 🖼 фото · 🔄 снова · 🗑 удалить. Или «📝 Разместить объявление» 👇",
             keyboard = menuWith(replyKeyboard),
         )
     }

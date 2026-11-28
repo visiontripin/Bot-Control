@@ -128,6 +128,7 @@ private fun actionLabel(btn: InlineBtn, packs: List<ReplyPack>): String {
         "switch_inline" -> "→ запрос в чат: ${btn.text.take(25)}"
         "llm" -> "→ ИИ: ${btn.text.ifBlank { btn.label }.take(25)}"
         "media" -> "→ медиа (${btn.mediaType.ifBlank { "photo" }})"
+        "fsm" -> "→ анкета FSM (${btn.menuTarget.ifBlank { btn.text.ifBlank { btn.label } }.take(20)})"
         "submenu" -> "→ подменю (${btn.submenu.size} кн.${if (btn.menuTarget.isNotBlank()) ", цель ${btn.menuTarget}" else ""})"
         "back" -> "→ ⬅️ назад в меню"
         else -> "→ текст: ${btn.text.take(30)}"
@@ -170,7 +171,7 @@ private fun MenuButtonDialog(
     var dice by remember { mutableStateOf(if (initial.action == "dice") initial.text.ifBlank { "🎲" } else "🎲") }
 
     val actionOptions = buildList {
-        addAll(listOf("text", "pack", "anim", "dice", "url", "web_app", "copy_text", "switch_inline", "llm", "media"))
+        addAll(listOf("text", "pack", "anim", "dice", "url", "web_app", "copy_text", "switch_inline", "llm", "media", "fsm"))
         if (depth < MAX_SUBMENU_DEPTH) add("submenu")
         if (depth > 0 || initial.action == "back") add("back")
         addAll(listOf("reminders_on", "reminders_off", "script"))
@@ -202,6 +203,7 @@ private fun MenuButtonDialog(
                             "switch_inline" -> "🔎 Подставить запрос в чат"
                             "llm" -> "🤖 Спросить ИИ"
                             "media" -> "🖼 Отправить медиа (file_id/URL)"
+                            "fsm" -> "📋 Запустить анкету (FSM)"
                             "submenu" -> "📂 Открыть подменю (вложенное)"
                             "back" -> "⬅️ Назад на уровень выше"
                             "reminders_on" -> "Включить напоминания"
@@ -286,6 +288,9 @@ private fun MenuButtonDialog(
                             label = { Text("Подпись к медиа (необязательно)") },
                             modifier = Modifier.fillMaxWidth().height(80.dp))
                     }
+                    "fsm" -> OutlinedTextField(menuTarget, { menuTarget = it },
+                        label = { Text("Название, ID или команда запуска анкеты (напр. /form)") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth())
                     "submenu" -> {
                         OutlinedTextField(text, { text = it },
                             label = { Text("Текст заголовка при открытии подменю (необязательно)") },
@@ -359,7 +364,7 @@ private fun MenuButtonDialog(
                         row = row,
                         toastNoChange = if (action.startsWith("reminders")) toastSame.trim() else "",
                         submenu = if (action == "submenu") submenu else emptyList(),
-                        menuTarget = if (action == "submenu") menuTarget.trim() else "",
+                        menuTarget = if (action == "submenu" || action == "fsm") menuTarget.trim() else "",
                         mediaType = if (action == "media") mediaType else "",
                         mediaRef = if (action == "media") mediaRef.trim() else "",
                         parseMode = parseMode,

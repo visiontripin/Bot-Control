@@ -310,7 +310,10 @@ fun BotTreeScreen(
                 TreeLeaf("Кнопки бота", "надписи и действия кнопок; кнопки под сообщениями") {
                     onOpen("buttons")
                 },
-                TreeLeaf("Напоминания (расписание)", "время, дни, кнопки") {
+                TreeLeaf("📋 Пошаговые анкеты (FSM)", "заявки, заказы, квизы, ветвления без кода") {
+                    onOpen("fsm")
+                },
+                TreeLeaf("Напоминания (расписание)", "время, дни, разовые даты, кнопки") {
                     onOpen("reminders")
                 },
                 TreeLeaf("Наборы ответов", "шутки, сарказм, свои + редактор") {
@@ -318,6 +321,17 @@ fun BotTreeScreen(
                 },
                 TreeLeaf("Поведение и паузы", "«печатает…», антифлуд, память ИИ") {
                     onOpen("behavior")
+                },
+            ))
+
+        TreeBranch("👥", "Аудитория и рассылки", "подписчики, роли, бан, массовые рассылки",
+            expanded.contains("audience"), { toggle("audience") },
+            listOf(
+                TreeLeaf("👥 Подписчики, роли и теги", "база чатов, VIP/админ, бан, переменные") {
+                    onOpen("users")
+                },
+                TreeLeaf("📣 Массовая рассылка", "по всем или сегменту с прогрессом и 429/403") {
+                    onOpen("broadcast")
                 },
             ))
 
@@ -384,6 +398,10 @@ fun BotTreeScreen(
                     confirmDelete = false
                     LocalBotService.stopBot(context, botId)
                     scope.launch {
+                        repository.deleteBotUsers(botId)
+                        repository.deleteBotKv(botId)
+                        repository.deleteBotRules(botId)
+                        localStore.resetBot(botId)
                         localStore.removeProfile(botId)
                         onBack()
                     }

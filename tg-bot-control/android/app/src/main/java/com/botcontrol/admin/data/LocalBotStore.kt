@@ -328,6 +328,8 @@ class LocalBotStore(context: Context) {
                 clarOnKey(botId), clarKey(botId), llmKey(botId),
                 aiModelKey(botId), aiTempKey(botId), aiTopKKey(botId), aiMaxTokKey(botId),
                 chanKey(botId), listOnKey(botId), listingsKey(botId), menuSigKey(botId),
+                adminIdsKey(botId), reqChanKey(botId), reqChanLinkKey(botId), reqChanPromptKey(botId),
+                fsmKey(botId), listMaxKey(botId), listAlbumKey(botId),
             ).forEach { key -> it.remove(key) }
         }
     }
@@ -337,6 +339,91 @@ class LocalBotStore(context: Context) {
     private fun chanKey(id: Long) = stringPreferencesKey("channel_$id")
     private fun listOnKey(id: Long) = booleanPreferencesKey("listings_on_$id")
     private fun listingsKey(id: Long) = stringPreferencesKey("listings_$id")
+    private fun listMaxKey(id: Long) = intPreferencesKey("listings_max_$id")
+    private fun listAlbumKey(id: Long) = booleanPreferencesKey("listings_album_$id")
+
+    // ---------- права, роли, обязательный канал, FSM (Этап 2) ----------
+    private fun adminIdsKey(id: Long) = stringPreferencesKey("admin_ids_$id")
+    private fun reqChanKey(id: Long) = stringPreferencesKey("req_channel_$id")
+    private fun reqChanLinkKey(id: Long) = stringPreferencesKey("req_channel_link_$id")
+    private fun reqChanPromptKey(id: Long) = stringPreferencesKey("req_channel_prompt_$id")
+    private fun fsmKey(id: Long) = stringPreferencesKey("fsm_flows_$id")
+
+    suspend fun adminIdsRaw(botId: Long = -1L): String {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[adminIdsKey(id)].orEmpty() }.first()
+    }
+
+    suspend fun setAdminIdsRaw(value: String, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[adminIdsKey(id)] = value.trim().take(2000) }
+    }
+
+    suspend fun adminIds(botId: Long = -1L): Set<Long> =
+        AccessPolicy.parseAdminIds(adminIdsRaw(botId))
+
+    suspend fun requiredChannel(botId: Long = -1L): String {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[reqChanKey(id)].orEmpty() }.first()
+    }
+
+    suspend fun setRequiredChannel(value: String, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[reqChanKey(id)] = value.trim().take(128) }
+    }
+
+    suspend fun requiredChannelLink(botId: Long = -1L): String {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[reqChanLinkKey(id)].orEmpty() }.first()
+    }
+
+    suspend fun setRequiredChannelLink(value: String, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[reqChanLinkKey(id)] = value.trim().take(256) }
+    }
+
+    suspend fun requiredChannelPrompt(botId: Long = -1L): String {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[reqChanPromptKey(id)].orEmpty() }.first()
+    }
+
+    suspend fun setRequiredChannelPrompt(value: String, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[reqChanPromptKey(id)] = value.trim().take(1000) }
+    }
+
+    suspend fun fsmFlows(botId: Long = -1L): List<FsmFlow> {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[fsmKey(id)].orEmpty() }.first()
+        return BotJson.fsmList(raw)
+    }
+
+    suspend fun setFsmFlows(flows: List<FsmFlow>, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[fsmKey(id)] = BotJson.save(flows) }
+    }
+
+    /** Макс. активных объявлений на одного пользователя (0 = без лимита). */
+    suspend fun listingMaxPerUser(botId: Long = -1L): Int {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[listMaxKey(id)] ?: 0 }.first()
+    }
+
+    suspend fun setListingMaxPerUser(value: Int, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[listMaxKey(id)] = value.coerceIn(0, 50) }
+    }
+
+    /** Публиковать 2+ фото объявления одним альбомом (sendMediaGroup). */
+    suspend fun listingUseAlbum(botId: Long = -1L): Boolean {
+        val id = resolveId(botId)
+        return appContext.localBotDataStore.data.map { it[listAlbumKey(id)] ?: true }.first()
+    }
+
+    suspend fun setListingUseAlbum(value: Boolean, botId: Long = -1L) {
+        val id = resolveId(botId)
+        appContext.localBotDataStore.edit { it[listAlbumKey(id)] = value }
+    }
 
     /** Канал публикаций, например «@daromvpl». Пусто = не публиковать. */
     suspend fun channelId(botId: Long = -1L): String {

@@ -167,6 +167,7 @@ private fun EventDialog(
     var jitterMin by remember { mutableStateOf(initial?.jitterMin ?: 0) }
     var parseMode by remember { mutableStateOf(initial?.parseMode.orEmpty()) }
     var threadIdText by remember { mutableStateOf(initial?.threadId?.toString().orEmpty()) }
+    var onceDate by remember { mutableStateOf(initial?.onceDate.orEmpty()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -238,6 +239,37 @@ private fun EventDialog(
                 }
                 Spacer(Modifier.height(6.dp))
                 OutlinedTextField(
+                    onceDate,
+                    { s -> onceDate = s.filter { it.isDigit() || it == '-' }.take(10) },
+                    label = { Text("Разовая дата YYYY-MM-DD (пусто = по дням недели)") },
+                    placeholder = { Text("2026-12-31") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val fmt = remember { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US) }
+                    FilterChip(
+                        selected = onceDate.isBlank(),
+                        onClick = { onceDate = "" },
+                        label = { Text("Повтор по дням") },
+                    )
+                    FilterChip(
+                        selected = onceDate.isNotBlank() && onceDate == fmt.format(java.util.Date()),
+                        onClick = { onceDate = fmt.format(java.util.Date()) },
+                        label = { Text("Разово сегодня") },
+                    )
+                    FilterChip(
+                        selected = false,
+                        onClick = {
+                            val cal = java.util.Calendar.getInstance()
+                            cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+                            onceDate = fmt.format(cal.time)
+                        },
+                        label = { Text("Завтра") },
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
                     threadIdText,
                     { s -> threadIdText = s.filter { it.isDigit() }.take(9) },
                     label = { Text("ID темы форума (message_thread_id, необязательно)") },
@@ -249,6 +281,7 @@ private fun EventDialog(
             }
         },
         confirmButton = {
+            val onceValid = onceDate.isBlank() || Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(onceDate)
             TextButton(
                 onClick = {
                     onSave(ScheduleEvent(
@@ -259,9 +292,10 @@ private fun EventDialog(
                         jitterMin = jitterMin,
                         parseMode = parseMode,
                         threadId = threadIdText.toIntOrNull(),
+                        onceDate = onceDate.trim(),
                     ))
                 },
-                enabled = text.isNotBlank() && days.isNotEmpty(),
+                enabled = text.isNotBlank() && onceValid && (onceDate.isNotBlank() || days.isNotEmpty()),
             ) { Text("Сохранить") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },

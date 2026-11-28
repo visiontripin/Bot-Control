@@ -2,6 +2,7 @@ package com.botcontrol.admin.service
 
 import android.content.Context
 import com.botcontrol.admin.BotControlApp
+import com.botcontrol.admin.data.AccessPolicy
 import com.botcontrol.admin.data.Anim
 import com.botcontrol.admin.data.BotJson
 import com.botcontrol.admin.data.BotMatcher
@@ -16,6 +17,7 @@ import com.botcontrol.admin.llm.BotScript
 import com.botcontrol.admin.llm.ChatMemory
 import com.botcontrol.admin.llm.DeviceLlm
 import com.botcontrol.admin.llm.DialogPrompt
+import com.botcontrol.admin.llm.ScriptDbSession
 
 /** Результат «размышлений» бота над сообщением. */
 data class BotDecision(
@@ -98,6 +100,29 @@ object BotBrain {
         else pack.items.random()
     }
 
+    /** Запуск JS-скрипта с загрузкой и сохранением персистентного `db` в Room. */
+    suspend fun runScriptWithDb(
+        app: BotControlApp,
+        botId: Long,
+        source: String,
+        user: String,
+        text: String,
+        chatId: Long,
+        ctx: MessageCtx,
+    ): Result<String> {
+        val uid = if (ctx.userId != 0L) ctx.userId else chatId
+        val userScope = "u:$uid"
+        val userInit = app.repository.kvList(botId, userScope)
+        val globalInit = app.repository.kvList(botId, "global")
+        val dbSession = ScriptDbSession(userInit, globalInit)
+        val res = BotScript.run(source, user, text, chatId, ctx, dbSession)
+        dbSession.userWrites.forEach { (k, v) -> app.repository.kvSet(botId, userScope, k, v) }
+        dbSession.userDeletes.forEach { k -> app.repository.kvDelete(botId, userScope, k) }
+        dbSession.globalWrites.forEach { (k, v) -> app.repository.kvSet(botId, "global", k, v) }
+        dbSession.globalDeletes.forEach { k -> app.repository.kvDelete(botId, "global", k) }
+        return res
+    }
+
     suspend fun decide(
         context: Context,
         store: LocalBotStore,
@@ -113,15 +138,31 @@ object BotBrain {
         val app = context.applicationContext as BotControlApp
         val botName = LocalBotService.states.value[botId]?.botUsername.orEmpty()
         val msgCtx = ctx ?: MessageCtx(chatId = chatId, firstName = firstName, text = text)
+        val dbUser = app.repository.botUser(botId, chatId)
+        val adminIds = store.adminIds(botId)
+        val userRole = dbUser?.role ?: "user"
+        val isAdmin = AccessPolicy.isAdmin(msgCtx.userId, chatId, userRole, adminIds)
+        val userVars = BotJson.stringMap(dbUser?.varsJson.orEmpty())
+
+        if (dbUser?.isBanned == true && !isAdmin) {
+            trace?.invoke("⛔ Пользователь в бане (ban=true) — ответ заблокирован")
+            return BotDecision("бан", "")
+        }
 
         // 1) декларативные правила
         val rules = app.repository.botRules(botId).filter { it.enabled }
         trace?.invoke("Проверяю правила (${rules.size})…")
         val packs = store.packs()
+        var deniedCommandRule: RuleOptions? = null
         for (rule in rules) {
             val opts = BotJson.ruleOptions(rule.options)
             val matched = BotMatcher.matchesRule(rule.type, rule.pattern, text, opts.wholeWord)
             if (!matched) continue
+            if (!AccessPolicy.canUseRule(opts, isAdmin, userRole)) {
+                trace?.invoke("⛔ Правило «${rule.pattern}» пропущено (нет прав: adminOnly=${opts.adminOnly}, роль=${opts.requiredRole.ifBlank { "—" }})")
+                if (rule.type == "command" && deniedCommandRule == null) deniedCommandRule = opts
+                continue
+            }
             val replyToId = if (opts.replyTo && msgCtx.messageId > 0) msgCtx.messageId else null
             trace?.invoke("✓ Сработало правило «${rule.pattern}» (тип: ${rule.type})")
             return when (rule.actionType) {
@@ -135,7 +176,7 @@ object BotBrain {
                 }
                 "script" -> {
                     trace?.invoke("Действие правила: скрипт JS")
-                    BotScript.run(rule.script, firstName, text, chatId, msgCtx).fold(
+                    runScriptWithDb(app, botId, rule.script, firstName, text, chatId, msgCtx).fold(
                         onSuccess = {
                             trace?.invoke("Скрипт выполнен")
                             BotDecision(
@@ -181,7 +222,7 @@ object BotBrain {
                 "media" -> {
                     val mType = opts.mediaType.ifBlank { "photo" }
                     val mRef = opts.mediaRef.ifBlank { rule.script.trim() }
-                    val caption = BotMatcher.expandPlaceholders(rule.responseText, msgCtx, botName)
+                    val caption = BotMatcher.expandPlaceholders(rule.responseText, msgCtx, botName, vars = userVars)
                     trace?.invoke("Действие правила: медиа ($mType)")
                     BotDecision(
                         source = "медиа ($mType) «${rule.pattern}»",
@@ -195,7 +236,7 @@ object BotBrain {
                 }
                 "poll" -> {
                     val q = BotMatcher.expandPlaceholders(
-                        opts.pollQuestion.ifBlank { rule.responseText }, msgCtx, botName)
+                        opts.pollQuestion.ifBlank { rule.responseText }, msgCtx, botName, vars = userVars)
                     trace?.invoke("Действие правила: опрос «${q.take(40)}»")
                     BotDecision(
                         source = "опрос «${rule.pattern}»",
@@ -211,7 +252,7 @@ object BotBrain {
                 }
                 "pack" -> {
                     val raw = randomFrom(packs, rule.packId, botId)
-                    val reply = BotMatcher.expandPlaceholders(raw, msgCtx, botName)
+                    val reply = BotMatcher.expandPlaceholders(raw, msgCtx, botName, vars = userVars)
                     trace?.invoke("Действие правила: случайное из набора")
                     BotDecision(
                         source = "набор «${packs.firstOrNull { it.id == rule.packId }?.name ?: rule.packId}»",
@@ -223,12 +264,18 @@ object BotBrain {
                 }
                 else -> BotDecision(
                     source = "правило «${rule.pattern}»",
-                    reply = BotMatcher.expandPlaceholders(rule.responseText, msgCtx, botName),
+                    reply = BotMatcher.expandPlaceholders(rule.responseText, msgCtx, botName, vars = userVars),
                     menu = parseMenu(rule.menu),
                     options = opts,
                     replyToMessageId = replyToId,
                 )
             }
+        }
+        if (deniedCommandRule != null) {
+            val req = deniedCommandRule.requiredRole
+            val why = if (deniedCommandRule.adminOnly) "только для администраторов"
+            else "требуется роль «$req»"
+            return BotDecision("доступ запрещён", "⛔ Недостаточно прав ($why).")
         }
         trace?.invoke("Ни одно правило не подошло")
 

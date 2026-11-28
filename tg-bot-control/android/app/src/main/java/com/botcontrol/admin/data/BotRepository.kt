@@ -1,7 +1,11 @@
 package com.botcontrol.admin.data
 
+import com.botcontrol.admin.data.local.BotKvDao
+import com.botcontrol.admin.data.local.BotKvEntity
 import com.botcontrol.admin.data.local.BotRuleDao
 import com.botcontrol.admin.data.local.BotRuleEntity
+import com.botcontrol.admin.data.local.BotUserDao
+import com.botcontrol.admin.data.local.BotUserEntity
 import com.botcontrol.admin.data.local.DraftDao
 import com.botcontrol.admin.data.local.DraftEntity
 import com.botcontrol.admin.data.remote.ApiClient
@@ -24,6 +28,8 @@ class BotRepository(
     private val apiClient: ApiClient,
     private val drafts: DraftDao,
     private val rules: BotRuleDao? = null,
+    private val users: BotUserDao? = null,
+    private val kv: BotKvDao? = null,
 ) {
     private lateinit var authStore: AuthStore
     private var baseUrl: String = ""
@@ -125,6 +131,121 @@ class BotRepository(
         dao.byBot(botId).forEach { dao.delete(it.id) }
     }
     suspend fun deleteBotRule(id: Int) = rules?.delete(id) ?: Unit
+
+    // ---------- База подписчиков (Room, per-botId) ----------
+    suspend fun botUsers(botId: Long): List<BotUserEntity> = withContext(Dispatchers.IO) {
+        users?.byBot(botId) ?: emptyList()
+    }
+
+    suspend fun botUser(botId: Long, chatId: Long): BotUserEntity? = withContext(Dispatchers.IO) {
+        users?.get(botId, chatId)
+    }
+
+    suspend fun saveBotUser(user: BotUserEntity) = withContext(Dispatchers.IO) {
+        users?.upsert(user)
+    }
+
+    suspend fun deleteBotUser(botId: Long, chatId: Long) = withContext(Dispatchers.IO) {
+        users?.delete(botId, chatId)
+    }
+
+    suspend fun deleteBotUsers(botId: Long) = withContext(Dispatchers.IO) {
+        users?.deleteByBot(botId)
+    }
+
+    /** Учитывает входящее сообщение/колбэк от пользователя; сбрасывает флаг isBlocked. */
+    suspend fun touchBotUser(
+        botId: Long,
+        chatId: Long,
+        userId: Long,
+        firstName: String,
+        username: String,
+        chatType: String = "",
+    ): BotUserEntity = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis() / 1000L
+        val dao = users
+        val cur = dao?.get(botId, chatId)
+        val updated = if (cur == null) {
+            BotUserEntity(
+                botId = botId,
+                chatId = chatId,
+                userId = if (userId != 0L) userId else chatId,
+                username = username.removePrefix("@"),
+                firstName = firstName,
+                chatType = chatType.ifBlank { if (chatId > 0L) "private" else "group" },
+                firstSeenAt = now,
+                lastSeenAt = now,
+                msgCount = 1,
+            )
+        } else {
+            cur.copy(
+                userId = if (userId != 0L) userId else cur.userId,
+                username = username.removePrefix("@").ifBlank { cur.username },
+                firstName = firstName.ifBlank { cur.firstName },
+                chatType = chatType.ifBlank { cur.chatType },
+                isBlocked = false,
+                lastSeenAt = now,
+                msgCount = cur.msgCount + 1,
+            )
+        }
+        dao?.upsert(updated)
+        updated
+    }
+
+    suspend fun markUserBlocked(botId: Long, chatId: Long, blocked: Boolean = true) =
+        withContext(Dispatchers.IO) {
+            val cur = users?.get(botId, chatId) ?: return@withContext
+            if (cur.isBlocked != blocked) {
+                users.upsert(cur.copy(isBlocked = blocked))
+            }
+        }
+
+    suspend fun userVars(botId: Long, chatId: Long): Map<String, String> = withContext(Dispatchers.IO) {
+        val raw = users?.get(botId, chatId)?.varsJson.orEmpty()
+        BotJson.stringMap(raw)
+    }
+
+    suspend fun mergeUserVars(botId: Long, chatId: Long, patch: Map<String, String>) =
+        withContext(Dispatchers.IO) {
+            if (patch.isEmpty()) return@withContext
+            val dao = users ?: return@withContext
+            val now = System.currentTimeMillis() / 1000L
+            val cur = dao.get(botId, chatId) ?: BotUserEntity(
+                botId = botId, chatId = chatId, userId = chatId, firstSeenAt = now, lastSeenAt = now,
+            )
+            val next = BotJson.stringMap(cur.varsJson).toMutableMap()
+            next.putAll(patch)
+            dao.upsert(cur.copy(varsJson = BotJson.save(next)))
+        }
+
+    // ---------- Персистентное KV-хранилище (для BotScript db.get/set) ----------
+    suspend fun kvGet(botId: Long, scopeKey: String, key: String): String? = withContext(Dispatchers.IO) {
+        kv?.get(botId, scopeKey, key)?.kvValue
+    }
+
+    suspend fun kvSet(botId: Long, scopeKey: String, key: String, value: String) = withContext(Dispatchers.IO) {
+        kv?.upsert(
+            BotKvEntity(
+                botId = botId,
+                scopeKey = scopeKey,
+                kvKey = key.take(128),
+                kvValue = value.take(8000),
+                updatedAt = System.currentTimeMillis() / 1000L,
+            )
+        )
+    }
+
+    suspend fun kvDelete(botId: Long, scopeKey: String, key: String) = withContext(Dispatchers.IO) {
+        kv?.delete(botId, scopeKey, key)
+    }
+
+    suspend fun kvList(botId: Long, scopeKey: String): Map<String, String> = withContext(Dispatchers.IO) {
+        kv?.listScope(botId, scopeKey)?.associate { it.kvKey to it.kvValue } ?: emptyMap()
+    }
+
+    suspend fun deleteBotKv(botId: Long) = withContext(Dispatchers.IO) {
+        kv?.deleteByBot(botId)
+    }
 
     // ---------- Drafts (Room, offline code editing) ----------
     suspend fun saveDraft(pluginId: String, code: String, manifest: String, config: String) =

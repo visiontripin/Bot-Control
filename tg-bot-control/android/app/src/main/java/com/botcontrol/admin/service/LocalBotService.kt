@@ -13,21 +13,20 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.botcontrol.admin.BotControlApp
 import com.botcontrol.admin.R
+import com.botcontrol.admin.data.AccessPolicy
 import com.botcontrol.admin.data.BotJson
 import com.botcontrol.admin.data.BotMatcher
 import com.botcontrol.admin.data.InlineBtn
+import com.botcontrol.admin.data.LocalBotStore
 import com.botcontrol.admin.data.MessageCtx
 import com.botcontrol.admin.data.ScheduleJitter
 import com.botcontrol.admin.data.findButtonRecursive
 import com.botcontrol.admin.data.withIds
-import com.botcontrol.admin.data.LocalBotStore
 import com.botcontrol.admin.data.telegram.TelegramApi
 import com.botcontrol.admin.data.telegram.TelegramApiException
 import com.botcontrol.admin.data.telegram.TelegramRateLimit
 import com.botcontrol.admin.data.telegram.TgCallback
 import com.botcontrol.admin.data.telegram.TgMessage
-import com.botcontrol.admin.llm.BotScript
-import com.botcontrol.admin.llm.DeviceLlm
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -75,6 +74,7 @@ class LocalBotService : Service() {
     private val botJobs = ConcurrentHashMap<Long, Job>()
     private val activeTokens = ConcurrentHashMap<Long, Pair<Job, String>>()
     private val inlineMenuStacks = ConcurrentHashMap<String, MutableList<Pair<String?, List<InlineBtn>>>>()
+    private val subCache = ConcurrentHashMap<String, Long>()
     private val startMutex = Mutex()
 
 
@@ -426,9 +426,50 @@ class LocalBotService : Service() {
         botScope: CoroutineScope,
     ) {
         store.setLastChatId(msg.chatId, botId)
+        val dbUser = app.repository.touchBotUser(
+            botId = botId,
+            chatId = msg.chatId,
+            userId = msg.userId,
+            firstName = msg.firstName,
+            username = msg.username,
+            chatType = msg.chatType,
+        )
+        val adminIds = store.adminIds(botId)
+        val isAdmin = AccessPolicy.isAdmin(msg.userId, msg.chatId, dbUser.role, adminIds)
+        if (dbUser.isBanned && !isAdmin) {
+            BotLog.log(botId, "⛔ Бан: сообщение от chat=${msg.chatId} проигнорировано")
+            return
+        }
+
         val text = if (msg.text.isBlank() && msg.kind.isNotBlank()) "[${msg.kind}]" else msg.text.trim()
-        if (text.isEmpty() && msg.photoId.isBlank()) return
+        if (text.isEmpty() && msg.photoId.isBlank() && msg.locationLat == null && msg.contactPhone.isBlank()) return
         val keyboard = store.keyboard(botId)
+        val msgCtx = MessageCtx(
+            chatId = msg.chatId,
+            userId = msg.userId,
+            firstName = msg.firstName,
+            username = msg.username,
+            chatType = msg.chatType,
+            text = text,
+            kind = msg.kind,
+            fileId = msg.fileId.ifBlank { msg.photoId },
+            messageId = msg.messageId,
+            threadId = msg.messageThreadId,
+            replyToText = msg.replyToText,
+        )
+
+        // Обязательная подписка на канал (включается в «Настройках бота»)
+        val reqChan = store.requiredChannel(botId)
+        if (reqChan.isNotBlank() && !isAdmin && msg.chatType in listOf("", "private")) {
+            val bypassRule = app.repository.botRules(botId).any { r ->
+                r.enabled && BotJson.ruleOptions(r.options).skipSubCheck &&
+                    BotMatcher.matchesRule(r.type, r.pattern, text, BotJson.ruleOptions(r.options).wholeWord)
+            }
+            if (!bypassRule) {
+                val allowed = ensureChannelSubscription(store, api, botId, reqChan, msg.chatId, msg.userId)
+                if (!allowed) return
+            }
+        }
 
         // Режим «Объявления»: визард/статистика перехватывают текст и фото.
         if (store.listingsOn(botId)) {
@@ -439,17 +480,11 @@ class LocalBotService : Service() {
                 text = text, photoId = msg.photoId, replyKeyboard = keyboard,
             )
             if (consumed) {
-                // Раньше эти сообщения не попадали в журнал — не было видно,
-                // что визард вообще сработал.
                 BotLog.log(botId, "📩 Сообщение: '${text.take(80)}'")
                 BotLog.log(botId, "   • Обработал режим «Объявления»")
                 return
             }
         } else if (ListingEngine.looksLikeNew(text) || ListingEngine.looksLikeMy(text)) {
-            // Режим «Объявления» выключен, а человек явно просит объявление
-            // («добавить объявление», /new, «мои объявления») и своего
-            // правила на этот текст нет. Раньше приходил случайный вопрос
-            // из набора — непонятно и не помогало. Свои правила в приоритете.
             val hasRule = app.repository.botRules(botId).any { r ->
                 r.enabled && r.pattern.isNotBlank() && (
                     (r.type == "button" && r.pattern.equals(text, ignoreCase = true)) ||
@@ -471,21 +506,13 @@ class LocalBotService : Service() {
             }
         }
 
+        // Пошаговые сценарии (FSM: анкеты, заявки, заказы)
+        if (FsmEngine.handleIncoming(app, store, api, botId, msg, msgCtx, keyboard)) {
+            return
+        }
+
         // Решение принимает общий «мозг» (тот же, что во вкладке имитации).
         BotLog.log(botId, "📩 Сообщение: '${text.take(80)}'")
-        val msgCtx = MessageCtx(
-            chatId = msg.chatId,
-            userId = msg.userId,
-            firstName = msg.firstName,
-            username = msg.username,
-            chatType = msg.chatType,
-            text = text,
-            kind = msg.kind,
-            fileId = msg.fileId.ifBlank { msg.photoId },
-            messageId = msg.messageId,
-            threadId = msg.messageThreadId,
-            replyToText = msg.replyToText,
-        )
         val decision = BotBrain.decide(
             context = this,
             store = store,
@@ -564,7 +591,57 @@ class LocalBotService : Service() {
             messageThreadId = msg.messageThreadId,
             keyboardOptions = kbOpts,
             removeKeyboard = opts.removeKeyboard,
-        ).onFailure { BotLog.log(botId, "❌ Не отправлено (${decision.source}): ${it.message ?: "?"}") }
+        ).onFailure { err ->
+            val apiErr = err as? TelegramApiException
+            if (apiErr?.isBlockedOrForbidden == true) {
+                app.repository.markUserBlocked(botId, msg.chatId, true)
+                BotLog.log(botId, "🚫 Пользователь ${msg.chatId} заблокировал бота (403)")
+            } else {
+                BotLog.log(botId, "❌ Не отправлено (${decision.source}): ${err.message ?: "?"}")
+            }
+        }
+    }
+
+    private suspend fun ensureChannelSubscription(
+        store: LocalBotStore,
+        api: TelegramApi,
+        botId: Long,
+        reqChannel: String,
+        chatId: Long,
+        userId: Long,
+    ): Boolean {
+        val uid = if (userId != 0L) userId else chatId
+        val cacheKey = "$botId:$uid"
+        val now = System.currentTimeMillis()
+        val cachedUntil = subCache[cacheKey] ?: 0L
+        if (cachedUntil > now) return true
+
+        val statusRes = api.getChatMemberStatus(reqChannel, uid)
+        if (statusRes.isFailure) {
+            val errMsg = statusRes.exceptionOrNull()?.message.orEmpty()
+            BotLog.log(botId, "⚠️ Проверка подписки $reqChannel: ${errMsg.take(120)}")
+            addProblem(botId, "sub_channel", "Канал $reqChannel: ${errMsg.take(100)}")
+            return true
+        }
+        resolveProblem(botId, "sub_channel")
+        val status = statusRes.getOrDefault("")
+        if (AccessPolicy.isMemberSubscribed(status)) {
+            if (subCache.size > 1000) subCache.clear()
+            subCache[cacheKey] = now + 60_000L
+            return true
+        }
+        val link = store.requiredChannelLink(botId).ifBlank {
+            if (reqChannel.startsWith("@")) "https://t.me/${reqChannel.removePrefix("@")}" else ""
+        }
+        val prompt = store.requiredChannelPrompt(botId).ifBlank {
+            "📢 Для работы с ботом подпишитесь на канал $reqChannel и нажмите «Проверить подписку»."
+        }
+        val btns = buildList {
+            if (link.isNotBlank()) add(InlineBtn(id = "sub_url", label = "📢 Подписаться", action = "url", url = link, row = 1))
+            add(InlineBtn(id = "sub_check", label = "✅ Проверить подписку", action = "sub_check", row = 2))
+        }
+        api.sendMessage(chatId, prompt, inlineMenu = btns)
+        return false
     }
 
     /** «Печатает…» + пауза-имитация набора (как typing_plugin, сек из настроек бота). */
@@ -586,6 +663,44 @@ class LocalBotService : Service() {
         botScope: CoroutineScope,
     ) {
         store.setLastChatId(cb.chatId, botId)
+        val cbUid = if (cb.userId != 0L) cb.userId else cb.chatId
+        val dbUser = app.repository.touchBotUser(
+            botId = botId,
+            chatId = cb.chatId,
+            userId = cbUid,
+            firstName = cb.firstName,
+            username = cb.username,
+            chatType = "",
+        )
+        val isAdmin = AccessPolicy.isAdmin(cbUid, cb.chatId, dbUser.role, store.adminIds(botId))
+        if (dbUser.isBanned && !isAdmin) {
+            api.answerCallbackQuery(cb.callbackId, "⛔ Доступ ограничен")
+            return
+        }
+
+        if (cb.data == "sub_check") {
+            val reqChan = store.requiredChannel(botId)
+            subCache.remove("$botId:$cbUid")
+            if (reqChan.isBlank()) {
+                api.answerCallbackQuery(cb.callbackId, "Проверка не требуется")
+                api.editMessageText(cb.chatId, cb.messageId, "✅ Можно пользоваться ботом.")
+                return
+            }
+            val res = api.getChatMemberStatus(reqChan, cbUid)
+            val status = res.getOrDefault("")
+            if (res.isSuccess && AccessPolicy.isMemberSubscribed(status)) {
+                subCache["$botId:$cbUid"] = System.currentTimeMillis() + 60_000L
+                api.answerCallbackQuery(cb.callbackId, "✅ Подписка подтверждена!")
+                api.editMessageText(cb.chatId, cb.messageId, "✅ Спасибо за подписку! Теперь можно пользоваться ботом.")
+            } else {
+                api.answerCallbackQuery(cb.callbackId, "Подпишитесь на $reqChan и нажмите снова")
+            }
+            return
+        }
+
+        if (FsmEngine.handleCallback(app, store, api, botId, cb, store.keyboard(botId))) {
+            return
+        }
 
         // Кнопки режима объявлений (lst_*) обрабатывает ListingEngine.
         // legacyCallback — кнопки из сообщений v1.5.2–1.5.4 ("cb<хеш>").
@@ -665,20 +780,32 @@ class LocalBotService : Service() {
             rawMenu + InlineBtn(id = "back_${cb.messageId}", label = "⬅️ Назад", action = "back")
         } else rawMenu
         val botName = states.value[botId]?.botUsername.orEmpty()
+        val userVars = BotJson.stringMap(dbUser.varsJson)
         val cbCtx = MessageCtx(
             chatId = cb.chatId,
-            userId = cb.chatId,
+            userId = cbUid,
             firstName = cb.firstName,
+            username = cb.username,
             text = btn.label,
             messageId = cb.messageId,
         )
         val pm = btn.parseMode.ifBlank { null }
         when (btn.action) {
+            "fsm" -> {
+                val started = FsmEngine.startFlowById(
+                    app = app, store = store, api = api, botId = botId,
+                    flowIdOrName = btn.menuTarget.ifBlank { btn.text.ifBlank { btn.label } },
+                    msgCtx = cbCtx,
+                )
+                if (!started) {
+                    api.sendMessage(cb.chatId, "Сценарий анкеты не найден или выключен.")
+                }
+            }
             "submenu" -> {
                 val sub = if (btn.submenu.isNotEmpty()) btn.submenu.withIds()
                 else findTargetMenu(app, store, botId, btn.menuTarget)
                 if (sub.isEmpty()) {
-                    api.sendMessage(cb.chatId, BotMatcher.expandPlaceholders(btn.text.ifBlank { "Подменю пусто." }, cbCtx, botName), parseMode = pm)
+                    api.sendMessage(cb.chatId, BotMatcher.expandPlaceholders(btn.text.ifBlank { "Подменю пусто." }, cbCtx, botName, vars = userVars), parseMode = pm)
                     return
                 }
                 if (inlineMenuStacks.size > 500) inlineMenuStacks.clear()
@@ -694,7 +821,7 @@ class LocalBotService : Service() {
                 if (btn.text.isNotBlank()) {
                     api.editMessageText(
                         cb.chatId, cb.messageId,
-                        BotMatcher.expandPlaceholders(btn.text, cbCtx, botName),
+                        BotMatcher.expandPlaceholders(btn.text, cbCtx, botName, vars = userVars),
                         finalSub, parseMode = pm,
                     )
                 } else {
@@ -720,7 +847,7 @@ class LocalBotService : Service() {
                     if (textToSet.isNotBlank()) {
                         api.editMessageText(
                             cb.chatId, cb.messageId,
-                            BotMatcher.expandPlaceholders(textToSet, cbCtx, botName),
+                            BotMatcher.expandPlaceholders(textToSet, cbCtx, botName, vars = userVars),
                             prevMenu, parseMode = pm,
                         )
                     } else {
@@ -732,7 +859,7 @@ class LocalBotService : Service() {
                         if (btn.text.isNotBlank()) {
                             api.editMessageText(
                                 cb.chatId, cb.messageId,
-                                BotMatcher.expandPlaceholders(btn.text, cbCtx, botName),
+                                BotMatcher.expandPlaceholders(btn.text, cbCtx, botName, vars = userVars),
                                 parentMenu, parseMode = pm,
                             )
                         } else {
@@ -745,13 +872,13 @@ class LocalBotService : Service() {
             }
             "pack" -> {
                 val raw = BotBrain.randomFrom(store.packs(), btn.packId, botId)
-                val reply = BotMatcher.expandPlaceholders(raw, cbCtx, botName)
+                val reply = BotMatcher.expandPlaceholders(raw, cbCtx, botName, vars = userVars)
                 withTyping(api, store, botId, cb.chatId)
                 if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, reply, menu, parseMode = pm)
                 else api.sendMessage(cb.chatId, reply, parseMode = pm)
             }
             "script" -> {
-                BotScript.run(btn.script, cb.firstName, btn.label, cb.chatId, cbCtx)
+                BotBrain.runScriptWithDb(app, botId, btn.script, cb.firstName, btn.label, cb.chatId, cbCtx)
                     .onSuccess { reply ->
                         val textOut = reply.ifBlank { "…" }
                         withTyping(api, store, botId, cb.chatId)
@@ -788,7 +915,7 @@ class LocalBotService : Service() {
                         chatId = cb.chatId,
                         mediaType = mType,
                         mediaRef = mRef,
-                        caption = BotMatcher.expandPlaceholders(btn.text, cbCtx, botName),
+                        caption = BotMatcher.expandPlaceholders(btn.text, cbCtx, botName, vars = userVars),
                         parseMode = pm,
                     ).onFailure { BotLog.log(botId, "❌ Медиа кнопки не отправлено: ${it.message?.take(140)}") }
                 }
@@ -835,7 +962,7 @@ class LocalBotService : Service() {
                 // Клиентские действия Telegram: открывает ссылку/Mini App, копирует текст или подставляет inline-запрос.
             }
             else -> {
-                val reply = BotMatcher.expandPlaceholders(btn.text.ifBlank { "…" }, cbCtx, botName)
+                val reply = BotMatcher.expandPlaceholders(btn.text.ifBlank { "…" }, cbCtx, botName, vars = userVars)
                 withTyping(api, store, botId, cb.chatId)
                 if (btn.edit) api.editMessageText(cb.chatId, cb.messageId, reply, menu, parseMode = pm)
                 else api.sendMessage(cb.chatId, reply, parseMode = pm)
@@ -943,9 +1070,13 @@ class LocalBotService : Service() {
                 val year = cal.get(Calendar.YEAR)
                 val doy = cal.get(Calendar.DAY_OF_YEAR)
                 val nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
-                val events = store.schedule(botId)
-                    .filter { it.enabled && it.days.contains(dow) }
+                val allEvents = store.schedule(botId)
+                val events = allEvents
+                    .filter { e ->
+                        e.enabled && (if (e.onceDate.isNotBlank()) e.onceDate == today else e.days.contains(dow))
+                    }
                     .sortedBy { ScheduleJitter.effectiveMinute(it.hour, it.minute, it.id, year, doy, it.jitterMin) }
+                val onceDoneIds = mutableListOf<String>()
                 for (e in events) {
                     val key = "${e.id}@$today"
                     if (key in sentToday) continue
@@ -999,8 +1130,17 @@ class LocalBotService : Service() {
                             }
                         }
                     }
-                    if (markDone) sentToday.add(key)
+                    if (markDone) {
+                        sentToday.add(key)
+                        if (e.onceDate.isNotBlank()) onceDoneIds.add(e.id)
+                    }
                     delay(400)
+                }
+                if (onceDoneIds.isNotEmpty()) {
+                    val refreshed = store.schedule(botId).map { ev ->
+                        if (ev.id in onceDoneIds) ev.copy(enabled = false) else ev
+                    }
+                    store.setSchedule(refreshed, botId)
                 }
                 val remOn = store.remindersOn(botId)
                 setState(botId) { it.copy(remindersOn = remOn) }

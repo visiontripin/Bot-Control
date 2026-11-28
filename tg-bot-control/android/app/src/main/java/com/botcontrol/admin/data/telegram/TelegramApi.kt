@@ -57,6 +57,8 @@ data class TgCallback(
     val messageId: Int,
     val data: String,
     val firstName: String,
+    val userId: Long = 0L,
+    val username: String = "",
 )
 
 /**
@@ -305,16 +307,18 @@ class TelegramApi(private val token: String) {
                     update.getAsJsonObject("callback_query")?.let { cb ->
                         val message = cb.getAsJsonObject("message")
                         val chat = message?.getAsJsonObject("chat")
+                        val from = cb.getAsJsonObject("from")
                         if (chat != null) {
                             callbacks.add(
                                 TgCallback(
                                     updateId = updateId,
                                     callbackId = cb.get("id").asString,
                                     chatId = chat.get("id").asLong,
-                                    messageId = message?.get("message_id")?.asInt ?: 0,
+                                    messageId = message.get("message_id")?.asInt ?: 0,
                                     data = cb.get("data")?.asString ?: "",
-                                    firstName = cb.getAsJsonObject("from")
-                                        ?.get("first_name")?.asString ?: "",
+                                    firstName = from?.get("first_name")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                                    userId = from?.get("id")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                                    username = from?.get("username")?.takeIf { !it.isJsonNull }?.asString ?: "",
                                 )
                             )
                         }

@@ -28,7 +28,13 @@ class BotControlApp : Application(), Configuration.Provider {
         apiClient = ApiClient(authStore)
         database = AppDatabase.get(this)
         localStore = LocalBotStore(this)
-        repository = BotRepository(apiClient, database.draftDao(), database.botRuleDao())
+        repository = BotRepository(
+            apiClient = apiClient,
+            drafts = database.draftDao(),
+            rules = database.botRuleDao(),
+            users = database.botUserDao(),
+            kv = database.botKvDao(),
+        )
     }
 
     // WorkManager on-demand init (also used by StatusWorker via inputData baseUrl)
