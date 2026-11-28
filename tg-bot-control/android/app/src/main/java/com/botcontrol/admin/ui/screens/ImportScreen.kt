@@ -70,24 +70,30 @@ fun ImportScreen(
     var message by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
 
-    fun reparse(text: String) {
+    fun reparse(text: String, prefix: String = "") {
         if (text.isBlank()) {
             error = "Сначала вставь текст кода или выбери файл"
             parsed = null
             return
         }
-        val p = ScriptImporter.parse(text)
-        if (p.isEmpty()) {
-            error = "Знакомых параметров не нашлось. Проверь, что в коде есть SYSTEM_PROMPT, " +
-                "команды (@bot.message_handler), списки фраз, расписание или кнопки."
-            parsed = null
-            message = ""
-        } else {
-            error = ""
-            parsed = p
-            checked.clear()
-            p.sections().forEach { checked[it.key] = true }
-            message = "Найдено категорий: ${p.sections().size}"
+        scope.launch {
+            val botId = resolveBotId(localStore)
+            val allPacks = localStore.packs()
+            val accessiblePacks = allPacks.filter { it.ownerBotId == botId } +
+                allPacks.filter { it.ownerBotId == 0L }
+            val p = ScriptImporter.parse(text, accessiblePacks)
+            if (p.isEmpty()) {
+                error = "Знакомых параметров не нашлось. Проверь, что в коде есть SYSTEM_PROMPT, " +
+                    "команды (@bot.message_handler), списки фраз, расписание или кнопки."
+                parsed = null
+                message = ""
+            } else {
+                error = ""
+                parsed = p
+                checked.clear()
+                p.sections().forEach { checked[it.key] = true }
+                message = "${prefix}Найдено категорий: ${p.sections().size}"
+            }
         }
     }
 
@@ -99,9 +105,7 @@ fun ImportScreen(
                 }.orEmpty()
             }.onSuccess { text ->
                 source = text
-                reparse(text)
-                if (parsed != null) message = "Файл прочитан: ${text.length} символов — " +
-                    "найдено категорий: ${parsed?.sections()?.size ?: 0}"
+                reparse(text, "Файл прочитан: ${text.length} символов — ")
             }.onFailure { error = "Не удалось прочитать файл: ${it.message}" }
         }
     }
@@ -256,14 +260,20 @@ private suspend fun applyParsed(
         done.add("наборов: ${parsed.packs.size}")
     }
 
-    fun packId(raw: String): String = packIdMap[raw] ?: raw.removePrefix("imp_")
+    fun packId(raw: String): String =
+        if (raw.startsWith("lib:")) raw.removePrefix("lib:")
+        else packIdMap[raw] ?: raw.removePrefix("imp_")
     /** Набор внутри анимации (слот-машина берёт финал из набора). */
     fun animFixed(script: String): String {
         val spec = Anim.decode(script)
-        return if (spec.packId.startsWith("imp_")) Anim.encode(spec.copy(packId = packId(spec.packId))) else script
+        return if (spec.packId.startsWith("imp_") || spec.packId.startsWith("lib:")) {
+            Anim.encode(spec.copy(packId = packId(spec.packId)))
+        } else script
     }
     fun buttonsFixed(list: List<InlineBtn>): List<InlineBtn> = list.map { b ->
-        val withPack = if (b.packId.startsWith("imp_")) b.copy(packId = packId(b.packId)) else b
+        val withPack = if (b.packId.startsWith("imp_") || b.packId.startsWith("lib:")) {
+            b.copy(packId = packId(b.packId))
+        } else b
         if (withPack.action == "anim") withPack.copy(script = animFixed(withPack.script)) else withPack
     }
 
@@ -292,6 +302,8 @@ private suspend fun applyParsed(
     var rulesSaved = 0
     var rulesUpdated = 0
     var rulesDropped = 0
+    var rulesSkipped = 0
+    val skippedPatterns = ArrayList<String>()
     var ruleButtons = 0
     for (imp in rulesToApply) {
         val menu = buttonsFixed(imp.menu)
@@ -310,7 +322,11 @@ private suspend fun applyParsed(
             else -> ""
         }
         val packForRule = if (action == "pack") packId(imp.packId) else ""
-        if (action == "text" && imp.text.isBlank()) continue // пустой текст — нечего сохранять
+        if (action == "text" && imp.text.isBlank()) {
+            rulesSkipped++
+            skippedPatterns.add(imp.pattern.ifBlank { imp.type })
+            continue // пустой текст — фиксируем пропуск в сводке
+        }
         // Самоисцеление: ищем уже сохранённое правило ПО ПАТТЕРНУ, не по типу.
         // Старые версии могли сохранить то же правило иначе (другой тип,
         // другой формат), и тогда новый импорт создавал дубль, а старые
@@ -358,6 +374,11 @@ private suspend fun applyParsed(
         done.add("правил: ${rulesSaved + rulesUpdated}" +
             (if (rulesUpdated > 0) " (обновлено $rulesUpdated)" else "") +
             (if (rulesDropped > 0) " (убрано дублей $rulesDropped)" else ""))
+    }
+    if (rulesSkipped > 0) {
+        val sample = skippedPatterns.take(5).joinToString(", ") +
+            if (skippedPatterns.size > 5) "…" else ""
+        done.add("пропущено пустых правил: $rulesSkipped ($sample)")
     }
 
     // ---------- меню Telegram (кнопка «Меню») ----------

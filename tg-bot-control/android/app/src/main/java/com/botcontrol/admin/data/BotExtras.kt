@@ -67,6 +67,12 @@ data class ScheduleEvent(
             .joinToString(", ")
     }
 
+    /** Вариант текста при чередовании через « | » по номеру дня в году. */
+    fun pickVariant(dayOfYear: Int): String {
+        val variants = text.split(" | ").map { it.trim() }.filter { it.isNotBlank() }
+        return if (variants.isEmpty()) text else variants[Math.floorMod(dayOfYear, variants.size)]
+    }
+
     companion object {
         val DAY_NAMES = listOf("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
     }

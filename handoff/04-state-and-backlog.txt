@@ -1,20 +1,20 @@
-BotControl — СОСТОЯНИЕ, КАРТА ФАЙЛОВ, ОТКРЫТЫЕ ЗАДАЧИ (на момент v1.7.4)
+BotControl — СОСТОЯНИЕ, КАРТА ФАЙЛОВ, ОТКРЫТЫЕ ЗАДАЧИ (на момент v1.7.5)
 ======================================================================
 
 ВЕРСИЯ
 ------
-  v1.7.4 (versionCode 37). Тег: botcontrol-v1.7.4-code37 (CI run 45361653147).
-  sha256:  c1ce6f6432c7ba9bfd80bb1183f9e945f29bb32830c59b156da77ab5412b1c93 (97 988 551 байт)
+  v1.7.5 (versionCode 38). Тег: botcontrol-v1.7.5-code38 (CI run 46140962885).
+  sha256:  d8698e3fa45936842b6e658bc9242041feae54fdc568e3881b21b6579bfb236d (97 988 551 байт)
   APK (постоянная ссылка на последний релиз):
            https://github.com/visiontripin/Bot-Control/releases/latest/download/BotControl-debug.apk
   APK (тег):
-           https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-v1.7.4-code37/BotControl-debug.apk
+           https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-v1.7.5-code38/BotControl-debug.apk
   cert:    2ecc9b73dd43d0b40cd032c3e83d2e7f4a549680d513a10b7ed5510e51e20d5e
   Пакет:   com.botcontrol.admin.debug (debug-сборка, ставится поверх, боты сохраняются)
   Windows: BotControl.exe 0.6.0, тег botcontrol-windows-preview-0.6.0,
            sha256 bcf3138b7d56c6f5dd26701d37423791fcd476c255641d9944814753d75085d3
            https://github.com/visiontripin/Bot-Control/releases/download/botcontrol-windows-preview-0.6.0/BotControl.exe
-  СЛЕДУЮЩАЯ: versionCode 38.
+  СЛЕДУЮЩАЯ: versionCode 39.
 
 ИСТОРИЯ ПОСЛЕДНИХ ВЕРСИЙ (подробно — tg-bot-control/RELEASE-NOTES.md)
   1.6.3  изоляция ботов: уточняющие вопросы, запасной ответ и кулдаун по botId;
@@ -39,6 +39,10 @@ BotControl — СОСТОЯНИЕ, КАРТА ФАЙЛОВ, ОТКРЫТЫЕ З�
          desktop-web/: чтение retry_after и Retry-After (TelegramRateLimit),
          per-token кулдаун, per-botId отмена Job/Mutex в LocalBotService,
          защита от дублей токенов и лишних вызовов setMyCommands/deleteWebhook
+  1.7.5  нативное распознавание play_animation(...) без def, резолв наборов
+         из библиотеки бота (I-2), учёт пропущенных правил rulesSkipped (I-3),
+         предупреждения при обрезках лимитов (I-5), ротация « | » для личных
+         напоминаний (U-1), лог AnimPlayer (U-5), гайд v1.7.5 и фикстуры D-10
 
 БОТЫ ПОЛЬЗОВАТЕЛЯ (живут на его телефоне; токенов в git НЕТ)
   @AppBotcontrol_bot     — бот-презентация (tg-bot-control/presentation-bot-ready.py)
@@ -96,10 +100,15 @@ BotControl — СОСТОЯНИЕ, КАРТА ФАЙЛОВ, ОТКРЫТЫЕ З�
 ОТКРЫТЫЕ ЗАДАЧИ ДЛЯ ПОЛЬЗОВАТЕЛЯ (напоминать)
   1. Отозвать токен бота 8709443116 в @BotFather (/revoke): он остался в
      истории git (удалённый botcontrol-handoff.zip).
-  2. Установить v1.7.4 — при HTTP 429 теперь соблюдается токенный retry_after
-     и в логе отображается точная пауза ожидания.
+  2. Установить v1.7.5 (code 38) — включает нативный play_animation(...),
+     резолв наборов из библиотеки бота, учёт пропущенных правил,
+     предупреждения при обрезках лимитов и ротацию « | » в личных
+     напоминаниях (плюс защиту от HTTP 429 из v1.7.4).
 
 ТЕХДОЛГ (по желанию, не поручено)
+  • Бэклог v1.8.0 / v1.9.0 из СПИСОК-ИСПРАВЛЕНИЙ.md: I-4 (вложенные
+    inline-меню), U-2 (shuffle-bag), U-3 (jitter расписания), U-4
+    (стикеры/GIF по file_id), U-6 (сводка ограничений).
   • Физически удалить архивные экраны серверного режима (Login, Dashboard,
     Plugins, PluginDetail, PluginEditor, Logs, Audit, Backup, Settings, Llm),
     data/remote/*, WebSocketManager, LanScanner, worker/StatusWorker и

@@ -80,3 +80,28 @@ done
 
 `anim-demo-bot.py` с v1.6.1 содержит ещё `/tour` — фото-квест (4 кадра:
 3 картинки по ссылке + кадр «только подпись»), 5 команд.
+
+## `oracle-v5.py` (v1.7.5)
+
+Эталон по разделу 2.10 `ГАЙД-СОЗДАНИЕ-БОТА-LLM.md`: использует нативный
+`play_animation(...)` **без объявления `def play_animation(...)`**,
+JS `run_script(...)`, `bot.send_dice(...)`, `ask_llm(...)`, `photo:` слайд
+в inline-кнопке с `message_id` и расписание с `" | "`. Ожидаемо:
+**ноль warnings** и `ROUNDTRIP OK`.
+
+## `oracle-broken-nohelper.py` (негативная фикстура, v1.7.5)
+
+Намеренно сломанная фикстура для регрессионного теста `V175TestKt` (`I-1`/`I-3`):
+`/wave` с `play_animation(...)` без `def` распознаётся как `anim`, а
+`/broken` и кнопка `broken_cb` с необъявленными выдуманными helper-функциями
+дают явные предупреждения в `Parsed.warnings` вместо тихого пропуска.
+Не включается в цикл zero-warning `RoundTripKt`: проверяется через
+`DumpKt` и `V175TestKt`.
+
+```bash
+for f in ../import-fixtures/*.py ../../smith-bot-ready.py; do
+  case "$f" in *broken*) continue ;; esac
+  ./run.sh out RoundTripKt "$f" /tmp/rt.py 2>&1 | tail -1
+  python3 -c "import ast; ast.parse(open('/tmp/rt.py').read())"
+done
+```

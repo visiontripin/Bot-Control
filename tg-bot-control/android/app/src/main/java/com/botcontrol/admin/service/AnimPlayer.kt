@@ -102,7 +102,7 @@ object AnimPlayer {
 
         for (i in start until frames.size) {
             if (i > 0 || editMessageId == null) delay(step)
-            val err = attempt(botId) { api.editMessageText(chatId, mid, fmt(frames[i]), emptyList(), mode) }
+            val err = attempt(botId, "кадр #${i + 1}") { api.editMessageText(chatId, mid, fmt(frames[i]), emptyList(), mode) }
             if (err != null) {
                 // Под кнопкой фото (в нём нет текста) — анимируем новым сообщением.
                 if (i == 0 && editMessageId != null) {
@@ -118,8 +118,8 @@ object AnimPlayer {
         val last = if (finalText.isNotBlank()) finalText else null
         if (last != null || menu.isNotEmpty()) {
             delay(step)
-            val err = if (last != null) attempt(botId) { api.editMessageText(chatId, mid, last, menu, null) }
-            else attempt(botId) { api.editMessageText(chatId, mid, fmt(frames.last()), menu, mode) }
+            val err = if (last != null) attempt(botId, "итог") { api.editMessageText(chatId, mid, last, menu, null) }
+            else attempt(botId, "итог") { api.editMessageText(chatId, mid, fmt(frames.last()), menu, mode) }
             err?.let { BotLog.log(botId, "❌ Анимация: итог не показан: ${it.take(160)}") }
         }
     }
@@ -171,9 +171,9 @@ object AnimPlayer {
             // (навигация по слайдам под одной картинкой).
             val tailMenu = if (i == frames.lastIndex && finalText.isBlank()) menu else emptyList()
             val err = if (f.src == curSrc) {
-                attempt(botId) { api.editMessageCaption(chatId, m, f.caption, tailMenu) }
+                attempt(botId, "фото-кадр #${i + 1}") { api.editMessageCaption(chatId, m, f.caption, tailMenu) }
             } else {
-                attempt(botId) {
+                attempt(botId, "фото-кадр #${i + 1}") {
                     api.editMessageMedia(chatId, m, resolve(f.src), f.caption, tailMenu).onSuccess { remember(f.src, it) }
                 }
             }
@@ -193,7 +193,7 @@ object AnimPlayer {
         val m = mid ?: return
         if (!onlyOne && finalText.isNotBlank()) {
             delay(step)
-            attempt(botId) { api.editMessageCaption(chatId, m, finalText, menu) }
+            attempt(botId, "фото-итог") { api.editMessageCaption(chatId, m, finalText, menu) }
                 ?.let { BotLog.log(botId, "❌ Фото-анимация: итог не показан: ${it.take(160)}") }
         }
     }
@@ -213,7 +213,7 @@ object AnimPlayer {
                 ?: 3L
             if (retrySec > 60L) return first
             val waitSec = retrySec.coerceIn(1L, 60L)
-            BotLog.log(botId, "⏳ Анимация: Telegram просит паузу $waitSec с (слишком частые правки)")
+            BotLog.log(botId, "⏳ Анимация (первый кадр): HTTP 429 → retry_after=${retrySec} с, пауза $waitSec с")
             delay((waitSec + 1L) * 1000L + 50L)
             return block()
         }
@@ -222,9 +222,10 @@ object AnimPlayer {
 
     /**
      * Один вызов Bot API с повтором при 429 (ждём retry_after).
-     * null — успех («message is not modified» тоже успех), иначе текст ошибки.
+     * null — успех («message is not modified» тоже успех + запись в журнал), иначе текст ошибки.
      */
-    private suspend fun attempt(botId: Long, block: suspend () -> Result<*>): String? {
+    private suspend fun attempt(botId: Long, label: String = "", block: suspend () -> Result<*>): String? {
+        val tag = if (label.isNotBlank()) " ($label)" else ""
         repeat(2) { n ->
             val r = block()
             if (r.isSuccess) return null
@@ -232,14 +233,17 @@ object AnimPlayer {
             val apiErr = err as? TelegramApiException
             val msg = err?.message.orEmpty()
             when {
-                msg.contains("not modified", ignoreCase = true) -> return null
+                msg.contains("not modified", ignoreCase = true) -> {
+                    BotLog.log(botId, "ℹ️ Анимация$tag: кадр пропущен (message is not modified)")
+                    return null
+                }
                 (apiErr?.isRateLimit == true || msg.contains("HTTP 429")) && n == 0 -> {
                     val retrySec = apiErr?.retryAfterSec?.takeIf { it > 0L }
                         ?: TelegramRateLimit.parseRetryAfterSec(msg).takeIf { it > 0L }
                         ?: 2L
                     if (retrySec > 60L) return msg.ifBlank { "HTTP 429: Telegram просит паузу $retrySec с" }
                     val waitSec = retrySec.coerceIn(1L, 60L)
-                    BotLog.log(botId, "⏳ Анимация: Telegram просит паузу $waitSec с (слишком частые правки)")
+                    BotLog.log(botId, "⏳ Анимация$tag: HTTP 429 → retry_after=${retrySec} с, ждём $waitSec с")
                     delay((waitSec + 1L) * 1000L + 50L)
                 }
                 else -> return msg.ifBlank { "ошибка" }
