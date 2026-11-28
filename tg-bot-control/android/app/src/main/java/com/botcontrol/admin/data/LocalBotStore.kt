@@ -296,6 +296,23 @@ class LocalBotStore(context: Context) {
         }
     }
 
+    suspend fun keyboardOptions(botId: Long = -1L): KeyboardOptions {
+        val id = resolveId(botId)
+        val raw = appContext.localBotDataStore.data.map { it[kbOptsKey(id)].orEmpty() }.first()
+        return BotJson.keyboardOptions(raw)
+    }
+
+    suspend fun setKeyboardOptions(value: KeyboardOptions, botId: Long = -1L) {
+        val id = resolveId(botId)
+        val clean = value.copy(
+            columns = value.columns.coerceIn(1, 4),
+            placeholder = value.placeholder.take(64),
+            contactButton = value.contactButton.take(32),
+            locationButton = value.locationButton.take(32),
+        )
+        appContext.localBotDataStore.edit { it[kbOptsKey(id)] = BotJson.save(clean) }
+    }
+
     /**
      * Полный сброс настроек бота к заводским: удаляются правила ответов,
      * расписание, клавиатура, характер и параметры ИИ, уточняющие вопросы,
@@ -305,7 +322,7 @@ class LocalBotStore(context: Context) {
     suspend fun resetBot(botId: Long) {
         appContext.localBotDataStore.edit {
             listOf(
-                schedKey(botId), kbKey(botId), promptKey(botId), defaultKey(botId),
+                schedKey(botId), kbKey(botId), kbOptsKey(botId), promptKey(botId), defaultKey(botId),
                 remKey(botId), lastChatKey(botId), menuKey(botId),
                 typingKey(botId), cooldownKey(botId), historyKey(botId),
                 clarOnKey(botId), clarKey(botId), llmKey(botId),
@@ -511,6 +528,7 @@ class LocalBotStore(context: Context) {
         // ключи с суффиксом botId
         private fun schedKey(id: Long) = stringPreferencesKey("schedule_$id")
         private fun kbKey(id: Long) = stringPreferencesKey("keyboard_$id")
+        private fun kbOptsKey(id: Long) = stringPreferencesKey("keyboard_opts_$id")
         private fun promptKey(id: Long) = stringPreferencesKey("system_prompt_$id")
         private fun defaultKey(id: Long) = stringPreferencesKey("default_reply_$id")
         private fun remKey(id: Long) = booleanPreferencesKey("reminders_on_$id")

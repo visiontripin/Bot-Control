@@ -118,6 +118,22 @@ fun main() {
             bot.send_poll(msg.chat.id, "Какой язык лучше?", ["Kotlin", "Python", "JS"],
                           is_anonymous=False, allows_multiple_answers=True)
 
+        @bot.message_handler(commands=["hidekb"])
+        def cmd_hidekb(msg):
+            bot.send_message(msg.chat.id, "Клавиатура скрыта", reply_markup=ReplyKeyboardRemove())
+
+        def chat_kb():
+            kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True,
+                                     input_field_placeholder="Выбери кнопку…")
+            kb.row(KeyboardButton("Кнопка 1"), KeyboardButton("Кнопка 2"), KeyboardButton("Кнопка 3"))
+            kb.row(KeyboardButton("Поделиться телефоном", request_contact=True),
+                   KeyboardButton("Геопозиция", request_location=True))
+            return kb
+
+        @bot.message_handler(commands=["kb"])
+        def cmd_kb(msg):
+            bot.send_message(msg.chat.id, "Клавиатура:", reply_markup=chat_kb())
+
         def kb_main():
             m = InlineKeyboardMarkup()
             m.row(
@@ -184,9 +200,18 @@ fun main() {
         p1.menuCommands.size == 2 && p1.menuCommands.all {
             it.scope == "all_group_chats" && it.languageCode == "ru"
         })
+    pcheck("Phase 1A import: KeyboardOptions + ReplyKeyboardRemove",
+        p1.keyboardRows.flatten() == listOf("Кнопка 1", "Кнопка 2", "Кнопка 3") &&
+            p1.keyboardOptions.columns == 3 && p1.keyboardOptions.oneTime &&
+            p1.keyboardOptions.placeholder == "Выбери кнопку…" &&
+            p1.keyboardOptions.contactButton == "Поделиться телефоном" &&
+            p1.keyboardOptions.locationButton == "Геопозиция" &&
+            p1.rules.firstOrNull { it.pattern == "/hidekb" }?.options?.removeKeyboard == true)
 
     // Round-trip через SettingsExporter -> ScriptImporter
     val store = LocalBotStore()
+    store.keyboardList = p1.keyboardRows.flatten()
+    store.kbOptions = p1.keyboardOptions
     val repo = BotRepository()
     repo.rules = p1.rules.mapIndexed { idx, r ->
         BotRuleEntity(
@@ -221,6 +246,13 @@ fun main() {
         p2.rules.any { it.type == "regex" && it.options.parseMode == "MarkdownV2" } &&
             p2.rules.any { it.actionType == "media" && it.options.mediaType == "sticker" } &&
             p2.rules.any { it.actionType == "poll" && it.options.pollOptions.size == 3 && !it.options.pollAnonymous && it.options.pollMultiple })
+    pcheck("Phase 1A round-trip: KeyboardOptions + ReplyKeyboardRemove сохранились",
+        p2.keyboardRows.flatten() == listOf("Кнопка 1", "Кнопка 2", "Кнопка 3") &&
+            p2.keyboardOptions.columns == 3 && p2.keyboardOptions.oneTime &&
+            p2.keyboardOptions.placeholder == "Выбери кнопку…" &&
+            p2.keyboardOptions.contactButton == "Поделиться телефоном" &&
+            p2.keyboardOptions.locationButton == "Геопозиция" &&
+            p2.rules.firstOrNull { it.pattern == "/hidekb" }?.options?.removeKeyboard == true)
 
     println(if (pfailed == 0) "PHASE1A ALL OK" else "PHASE1A FAILED: $pfailed")
     if (pfailed != 0) kotlin.system.exitProcess(1)

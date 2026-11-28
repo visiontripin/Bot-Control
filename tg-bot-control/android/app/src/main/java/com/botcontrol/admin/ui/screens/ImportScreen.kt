@@ -67,6 +67,7 @@ fun ImportScreen(
     var source by remember { mutableStateOf("") }
     var parsed by remember { mutableStateOf<ScriptImporter.Parsed?>(null) }
     val checked = remember { mutableStateMapOf<String, Boolean>() }
+    var showGuide by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
 
@@ -203,6 +204,32 @@ fun ImportScreen(
         OutlinedButton(onClick = { source = ""; parsed = null; message = ""; error = "" },
             modifier = Modifier.fillMaxWidth()) {
             Text("🧹 Очистить")
+        }
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = { showGuide = !showGuide }, modifier = Modifier.fillMaxWidth()) {
+            Text(if (showGuide) "▲ Скрыть памятку импорта" else "📖 Что понимает импорт (памятка)")
+        }
+        if (showGuide) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("Поддерживаемые конструкции (Python: telebot / aiogram, JS):",
+                        style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(4.dp))
+                    listOf(
+                        "• Команды и триггеры: @bot.message_handler(commands=...), m.text == '…', 'слово' in m.text.lower(), regexp='…'",
+                        "• Ответы: send_message (HTML / MarkdownV2, disable_web_page_preview, disable_notification, protect_content, reply_to_message_id)",
+                        "• Медиа и опросы: send_sticker / send_animation / send_document / send_video / send_voice / send_audio / send_poll",
+                        "• Inline-меню (до 3 уровней подменю): InlineKeyboardButton с callback_data, url, web_app, copy_text, switch_inline_query_current_chat",
+                        "• Клавиатура чата: ReplyKeyboardMarkup(one_time_keyboard, input_field_placeholder), request_contact, request_location, ReplyKeyboardRemove",
+                        "• Наборы, анимации и кубик: ИМЯ = [...], random.choice(ИМЯ) (в т.ч. из библиотеки бота), play_animation(...), send_dice(...)",
+                        "• Меню Telegram и расписание: bot.set_my_commands(..., scope=..., language_code=...), get_today_schedule(now)",
+                    ).forEach { line ->
+                        Text(line, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.height(2.dp))
+                    }
+                }
+            }
         }
         Spacer(Modifier.height(24.dp))
     }
@@ -426,6 +453,9 @@ private suspend fun applyParsed(
             done.add("без действия: ${noAction.size}")
             com.botcontrol.admin.service.BotLog.log(localStore, botId, "⚠️ Кнопки клавиатуры без действия: ${noAction.joinToString(", ")}")
         }
+    }
+    if (wanted(ScriptImporter.SEC_KEYBOARD) && (!parsed.keyboardOptions.isDefault || kbLabels.isNotEmpty())) {
+        localStore.setKeyboardOptions(parsed.keyboardOptions, botId)
     }
 
     // ---------- расписание ----------

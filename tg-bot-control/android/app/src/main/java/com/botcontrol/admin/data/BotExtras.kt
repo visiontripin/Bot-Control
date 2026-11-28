@@ -144,11 +144,26 @@ data class RuleOptions(
     val pollOptions: List<String> = emptyList(),
     val pollAnonymous: Boolean = true,
     val pollMultiple: Boolean = false,
+    val removeKeyboard: Boolean = false,
 ) {
     val isDefault: Boolean
         get() = parseMode.isBlank() && !disablePreview && !silent && !protectContent &&
             !replyTo && !wholeWord && mediaType.isBlank() && mediaRef.isBlank() &&
-            pollQuestion.isBlank() && pollOptions.isEmpty() && pollAnonymous && !pollMultiple
+            pollQuestion.isBlank() && pollOptions.isEmpty() && pollAnonymous &&
+            !pollMultiple && !removeKeyboard
+}
+
+/** Настройки Reply-клавиатуры внизу чата. */
+data class KeyboardOptions(
+    val columns: Int = 2,
+    val oneTime: Boolean = false,
+    val placeholder: String = "",
+    val contactButton: String = "",
+    val locationButton: String = "",
+) {
+    val isDefault: Boolean
+        get() = columns == 2 && !oneTime && placeholder.isBlank() &&
+            contactButton.isBlank() && locationButton.isBlank()
 }
 
 /** Контекст входящего сообщения для движка правил, плейсхолдеров и JS-скриптов. */
@@ -197,6 +212,10 @@ object BotJson {
     fun ruleOptions(json: String): RuleOptions =
         if (json.isBlank()) RuleOptions()
         else load(json, object : TypeToken<RuleOptions>() {}, RuleOptions())
+
+    fun keyboardOptions(json: String): KeyboardOptions =
+        if (json.isBlank()) KeyboardOptions()
+        else load(json, object : TypeToken<KeyboardOptions>() {}, KeyboardOptions())
 }
 
 /** Детерминированные id кнопок (рекурсивно, включая вложенные submenu):

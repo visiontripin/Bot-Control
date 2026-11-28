@@ -115,7 +115,7 @@ def btn_joke(msg):
    • текст, начинающийся с »канал, — публикация в канал; варианты через " | " чередуются по дням.
 8. ЗАРЕЗЕРВИРОВАНО (не занимать): BOT_TOKEN, SYSTEM_PROMPT, LLM_MAX_TOKENS, LLM_MAX_TOP_K, MAX_HISTORY, ANSWER_COOLDOWN, DEFAULT_TYPING_SECONDS, schedule, commands, content_types, messages, history, days, buttons, menu, items, payload, choices, keyboards, get_today_schedule, cmd_*.
    Свои наборы называй иначе: MORNING_PHRASES, FAQ_ANSWERS, THANK_YOU_LINES.
-9. ЗАПРЕЩЕНО: f-строки с выражениями, import, requests/asyncio/os, регулярки, вложенные списки/словари, HTML/markdown.
+9. ЗАПРЕЩЕНО: f-строки с выражениями, import, requests/asyncio/os, вложенные списки/словари.
 10. ФИШКИ — АНИМАЦИЯ правкой ОДНОГО сообщения (заставки, прогресс-бар, спиннер, флипбук, текстовый квест). Объяви помощника ровно так и вызывай его:
 def play_animation(chat_id, frames, delay=0.7, final=None, reply_markup=None, message_id=None, **kw):
     m_id = message_id or bot.send_message(chat_id, frames[0]).message_id
@@ -133,6 +133,13 @@ ANIM_ROCKET = [ "  🚀\n\n🌍", "\n  🚀\n🌍", "\n\n🌍🔥" ]      # св
    • СЛАЙДЫ КНОПКАМИ (презентация, каталог с фото): в ветке кнопки play_animation(chat_id, SLIDE_X, 0.5, message_id=call.message.message_id, reply_markup=main_menu()), где SLIDE_X = [ "photo: https://…/slide2.png\nподпись" ] — картинка и подпись сменятся в том же сообщении, меню останется. Кнопок под сообщением — до 12, ряды — kb.row(…);
    • delay — от 0.5 до 3 секунд (Telegram не любит частые правки); итог и кнопки — в final и reply_markup.
 11. КУБИКИ Telegram (анимированный случайный результат): bot.send_dice(msg.chat.id, emoji="🎲") — годятся 🎲 🎯 🏀 ⚽ 🎳 🎰; можно и в ветке кнопки.
+12. МЕХАНИКИ v1.8.0 (поддерживаются нативно):
+   • Форматирование и доставка: parse_mode="HTML" или "MarkdownV2" (с авто-откатом), disable_web_page_preview=True, disable_notification=True, protect_content=True, reply_to_message_id=msg.message_id.
+   • Regex и плейсхолдеры: @bot.message_handler(regexp=r"^заказ\s+#?\d+$"); подстановки {user}, {username}, {user_id}, {chat_id}, {args}, {arg1}, {arg2}, {bot}, {date}, {time}.
+   • Вложенные подменю и новые inline-кнопки: в обработчике кнопки edit_message_text(..., reply_markup=sub_menu()); web_app=WebAppInfo(url="…"), copy_text=CopyTextButton(text="…"), switch_inline_query_current_chat="…", ветка с ask_llm(...).
+   • Медиа и опросы: bot.send_sticker / send_animation / send_document / send_video / send_voice / send_audio (file_id или URL), bot.send_poll(chat_id, "Вопрос", ["Да", "Нет"]).
+   • Клавиатура чата: ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True, input_field_placeholder="…"), request_contact=True, request_location=True, ReplyKeyboardRemove().
+   • Меню команд: bot.set_my_commands([...], scope=BotCommandScopeAllGroupChats(), language_code="ru").
 
 ЗАДАНИЕ: создай бота:"""
 

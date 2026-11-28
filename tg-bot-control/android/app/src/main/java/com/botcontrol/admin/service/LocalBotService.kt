@@ -550,6 +550,7 @@ class LocalBotService : Service() {
         if (decision.reply.isBlank()) return
         // Для ответа ИИ «печатает…» уже показано во время генерации — не дублируем паузу.
         if (decision.source != "ИИ") withTyping(api, store, botId, msg.chatId)
+        val kbOpts = store.keyboardOptions(botId)
         api.sendMessage(
             chatId = msg.chatId,
             text = decision.reply,
@@ -561,6 +562,8 @@ class LocalBotService : Service() {
             protectContent = opts.protectContent,
             replyToMessageId = decision.replyToMessageId,
             messageThreadId = msg.messageThreadId,
+            keyboardOptions = kbOpts,
+            removeKeyboard = opts.removeKeyboard,
         ).onFailure { BotLog.log(botId, "❌ Не отправлено (${decision.source}): ${it.message ?: "?"}") }
     }
 
@@ -599,8 +602,14 @@ class LocalBotService : Service() {
         }
 
         // Ищем кнопку ТОЛЬКО среди меню этого бота (правила + события, включая вложенные подменю I-4).
+        val stackKey = "$botId:${cb.chatId}:${cb.messageId}"
         val hit = findButton(app, store, botId, cb.data)
-        val btn = hit?.first
+        val syntheticBack = if (hit == null && cb.data.startsWith("back_")) {
+            val hasStack = inlineMenuStacks[stackKey]?.let { synchronized(it) { it.isNotEmpty() } } == true
+            val hasParent = hasStack || findParentMenuOf(app, store, botId, cb.data) != null
+            if (hasParent) InlineBtn(id = cb.data, label = "⬅️ Назад", action = "back") else null
+        } else null
+        val btn = hit?.first ?: syntheticBack
         // Всегда отвечаем на callback, чтобы в Telegram не висели «часики».
         if (btn == null) {
             // Диагностика: что бот знает сейчас — видно в «Журнал событий».
@@ -650,7 +659,11 @@ class LocalBotService : Service() {
             }
         }
 
-        val menu = hit?.second ?: listOf(btn)
+        val rawMenu = hit?.second ?: listOf(btn)
+        val inSubmenuNow = inlineMenuStacks[stackKey]?.let { synchronized(it) { it.isNotEmpty() } } == true
+        val menu = if (inSubmenuNow && !rawMenu.any { it.action == "back" } && rawMenu.size < 12) {
+            rawMenu + InlineBtn(id = "back_${cb.messageId}", label = "⬅️ Назад", action = "back")
+        } else rawMenu
         val botName = states.value[botId]?.botUsername.orEmpty()
         val cbCtx = MessageCtx(
             chatId = cb.chatId,
@@ -668,12 +681,11 @@ class LocalBotService : Service() {
                     api.sendMessage(cb.chatId, BotMatcher.expandPlaceholders(btn.text.ifBlank { "Подменю пусто." }, cbCtx, botName), parseMode = pm)
                     return
                 }
-                val stackKey = "$botId:${cb.chatId}:${cb.messageId}"
                 if (inlineMenuStacks.size > 500) inlineMenuStacks.clear()
                 val stack = inlineMenuStacks.getOrPut(stackKey) { mutableListOf() }
                 synchronized(stack) {
                     if (stack.size >= 16) stack.removeAt(0)
-                    stack.add(null to menu)
+                    stack.add(null to rawMenu)
                 }
                 val hasBack = sub.any { it.action == "back" }
                 val finalSub = if (!hasBack && sub.size < 12) {
@@ -690,13 +702,20 @@ class LocalBotService : Service() {
                 }
             }
             "back" -> {
-                val stackKey = "$botId:${cb.chatId}:${cb.messageId}"
                 val stack = inlineMenuStacks[stackKey]
+                var hasMoreLevels = false
                 val prev = stack?.let {
-                    synchronized(it) { if (it.isNotEmpty()) it.removeAt(it.lastIndex) else null }
+                    synchronized(it) {
+                        val item = if (it.isNotEmpty()) it.removeAt(it.lastIndex) else null
+                        hasMoreLevels = it.isNotEmpty()
+                        item
+                    }
                 }
                 if (prev != null) {
-                    val (prevText, prevMenu) = prev
+                    val (prevText, prevMenuRaw) = prev
+                    val prevMenu = if (hasMoreLevels && !prevMenuRaw.any { b -> b.action == "back" } && prevMenuRaw.size < 12) {
+                        prevMenuRaw + InlineBtn(id = "back_${cb.messageId}", label = "⬅️ Назад", action = "back")
+                    } else prevMenuRaw
                     val textToSet = btn.text.ifBlank { prevText.orEmpty() }
                     if (textToSet.isNotBlank()) {
                         api.editMessageText(
@@ -876,10 +895,12 @@ class LocalBotService : Service() {
         backData: String,
     ): List<InlineBtn>? {
         val targetId = backData.removePrefix("back_")
+        fun matchesTarget(id: String) = id == backData || id == targetId ||
+            (targetId.length >= 8 && id.startsWith(targetId))
         fun searchParent(level: List<InlineBtn>): List<InlineBtn>? {
             for (b in level) {
-                if (b.submenu.any { it.id == backData || it.id == targetId } ||
-                    (b.id == targetId && b.action == "submenu")
+                if (b.submenu.any { matchesTarget(it.id) } ||
+                    (matchesTarget(b.id) && b.action == "submenu")
                 ) {
                     return level
                 }

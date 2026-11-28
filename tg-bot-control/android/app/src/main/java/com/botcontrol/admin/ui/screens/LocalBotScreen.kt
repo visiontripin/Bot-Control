@@ -322,6 +322,7 @@ fun LocalBotScreen(
         var protectContent by remember { mutableStateOf(initOpts.protectContent) }
         var replyTo by remember { mutableStateOf(initOpts.replyTo) }
         var wholeWord by remember { mutableStateOf(initOpts.wholeWord) }
+        var removeKeyboard by remember { mutableStateOf(initOpts.removeKeyboard) }
         var mediaType by remember { mutableStateOf(initOpts.mediaType.ifBlank { "photo" }) }
         var mediaRef by remember { mutableStateOf(initOpts.mediaRef) }
         var pollQuestion by remember { mutableStateOf(initOpts.pollQuestion.ifBlank { initial?.responseText.orEmpty() }) }
@@ -330,7 +331,8 @@ fun LocalBotScreen(
         var pollMulti by remember { mutableStateOf(initOpts.pollMultiple) }
         var showDeliveryOpts by remember {
             mutableStateOf(initOpts.parseMode.isNotBlank() || initOpts.disablePreview ||
-                initOpts.silent || initOpts.protectContent || initOpts.replyTo || initOpts.wholeWord)
+                initOpts.silent || initOpts.protectContent || initOpts.replyTo ||
+                initOpts.wholeWord || initOpts.removeKeyboard)
         }
         val regexValid = type != "regex" || runCatching { Regex(pattern) }.isSuccess
         LaunchedEffect(Unit) { packs = localStore.packs() }
@@ -518,6 +520,10 @@ fun LocalBotScreen(
                             Checkbox(checked = replyTo, onCheckedChange = { replyTo = it })
                             Text("Отвечать с цитатой (reply_to)", style = MaterialTheme.typography.bodySmall)
                         }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = removeKeyboard, onCheckedChange = { removeKeyboard = it })
+                            Text("Скрыть клавиатуру чата (ReplyKeyboardRemove)", style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                     Spacer(Modifier.height(8.dp))
                     if (action != "llm") {
@@ -546,6 +552,7 @@ fun LocalBotScreen(
                                 pollOptions = if (action == "poll") pollOpts else emptyList(),
                                 pollAnonymous = pollAnon,
                                 pollMultiple = pollMulti,
+                                removeKeyboard = removeKeyboard,
                             )
                             val id = repository.saveBotRule(
                                 BotRuleEntity(

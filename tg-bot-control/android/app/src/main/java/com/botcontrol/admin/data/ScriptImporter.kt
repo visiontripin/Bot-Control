@@ -58,6 +58,7 @@ object ScriptImporter {
         val rules: List<ImportedRule> = emptyList(),
         val menuCommands: List<MenuCommand> = emptyList(),
         val keyboardRows: List<List<String>> = emptyList(),
+        val keyboardOptions: KeyboardOptions = KeyboardOptions(),
         val channel: String? = null,
         val listingsOn: Boolean? = null,
         val warnings: List<String> = emptyList(),
@@ -77,8 +78,8 @@ object ScriptImporter {
             maxTokens == null && topK == null && historyLimit == null &&
             cooldownSec == null && typingSec == null && clarify.isEmpty() &&
             packs.isEmpty() && schedule.isEmpty() && rules.isEmpty() &&
-            menuCommands.isEmpty() && keyboardRows.isEmpty() && channel == null &&
-            listingsOn == null
+            menuCommands.isEmpty() && keyboardRows.isEmpty() && keyboardOptions.isDefault &&
+            channel == null && listingsOn == null
 
         fun sections(): List<Section> = buildList {
             val ai = buildList {
@@ -106,9 +107,15 @@ object ScriptImporter {
                 add(Section(SEC_RULES, "🔤 Ответы на кнопки клавиатуры и фразы",
                     textRules.map { describe(it) }))
             }
-            if (keyboardRows.isNotEmpty()) {
-                add(Section(SEC_KEYBOARD, "⌨️ Клавиатура чата (${keyboardRows.sumOf { it.size }} кн.)",
-                    keyboardRows.map { row -> row.joinToString("  |  ") }))
+            if (keyboardRows.isNotEmpty() || !keyboardOptions.isDefault) {
+                val det = buildList {
+                    keyboardRows.forEach { row -> add(row.joinToString("  |  ")) }
+                    if (keyboardOptions.contactButton.isNotBlank()) add("📞 Контакт: ${keyboardOptions.contactButton}")
+                    if (keyboardOptions.locationButton.isNotBlank()) add("📍 Локация: ${keyboardOptions.locationButton}")
+                    if (keyboardOptions.oneTime) add("Одноразовая клавиатура (one_time_keyboard)")
+                    if (keyboardOptions.placeholder.isNotBlank()) add("Подсказка: ${keyboardOptions.placeholder}")
+                }
+                add(Section(SEC_KEYBOARD, "⌨️ Клавиатура чата (${keyboardRows.sumOf { it.size }} кн.)", det))
             }
             if (packs.isNotEmpty()) {
                 add(Section(SEC_PACKS, "🎲 Наборы ответов",
@@ -223,8 +230,16 @@ private class Parser(
         val webAppUrl: String? = null,
         val copyText: String? = null,
         val switchInline: String? = null,
+        val requestContact: Boolean = false,
+        val requestLocation: Boolean = false,
     )
-    private data class Keyboard(val inline: Boolean, val rows: List<List<KbButton>>)
+    private data class Keyboard(
+        val inline: Boolean,
+        val rows: List<List<KbButton>>,
+        val oneTime: Boolean = false,
+        val placeholder: String = "",
+        val columns: Int = 2,
+    )
 
     private val packHelpers = HashMap<String, String>()
     /** Функции-помощники анимации: встроенный play_animation + цикл с edit_message_text. */
@@ -260,6 +275,7 @@ private class Parser(
         val pollOptions: List<String> = emptyList(),
         val pollAnonymous: Boolean = true,
         val pollMultiple: Boolean = false,
+        val removeKeyboard: Boolean = false,
     )
 
     /** Ссылка на клавиатуру из reply_markup: функция или локальная разметка. */
@@ -412,23 +428,37 @@ private class Parser(
         }
         val keyboardRows = ArrayList<List<String>>()
         var kbCount = 0
+        var contactBtn = ""
+        var locationBtn = ""
         for (row in rawKbRows) {
-            if (kbCount >= 12) break
             val outRow = ArrayList<String>()
             for (btn in row) {
-                if (kbCount >= 12) break
                 val rawLabel = btn.label
                 if (rawLabel.length > 32) {
                     warnings.add("ℹ️ Кнопка клавиатуры «${rawLabel.take(20)}…» обрезана до лимита: было ${rawLabel.length} симв., сохранено 32")
                 }
                 val trimmed = rawLabel.take(32)
-                if (trimmed.isNotBlank()) {
+                if (trimmed.isBlank()) continue
+                if (btn.requestContact && contactBtn.isBlank()) {
+                    contactBtn = trimmed
+                } else if (btn.requestLocation && locationBtn.isBlank()) {
+                    locationBtn = trimmed
+                } else if (kbCount < 12) {
                     outRow.add(trimmed)
                     kbCount++
                 }
             }
             if (outRow.isNotEmpty()) keyboardRows.add(outRow)
         }
+        val kbOpts = chatKb?.kb?.let { k ->
+            KeyboardOptions(
+                columns = k.columns.coerceIn(1, 4),
+                oneTime = k.oneTime,
+                placeholder = k.placeholder.take(64),
+                contactButton = contactBtn,
+                locationButton = locationBtn,
+            )
+        } ?: KeyboardOptions()
 
         val promptRaw = (moduleExprs["SYSTEM_PROMPT"] as? PyExpr.Str)?.value?.trim()?.ifBlank { null }
             ?: legacyPrompt()
@@ -459,6 +489,7 @@ private class Parser(
             rules = rules,
             menuCommands = menuCommands(rules),
             keyboardRows = keyboardRows,
+            keyboardOptions = kbOpts,
             channel = channelSetting(),
             listingsOn = listOf("LISTINGS_MODE", "LISTINGS_ON", "LISTINGS")
                 .firstNotNullOfOrNull { (moduleExprs[it] as? PyExpr.Const)?.value },
@@ -570,6 +601,8 @@ private class Parser(
             c.shortFn in markupCtors && (varName == null || assignedName(c) == varName)
         } ?: return null
         val inline = ctor.shortFn.startsWith("Inline")
+        val oneTime = !inline && boolConst(ctor.kwargs["one_time_keyboard"])
+        val placeholder = if (!inline) strOf(ctor.kwargs["input_field_placeholder"], f).orEmpty().take(64) else ""
         val v = assignedName(ctor)
         val rowWidth = ((ctor.kwargs["row_width"] as? PyExpr.Num)?.value?.toInt() ?: 3).coerceIn(1, 8)
         val rows = ArrayList<List<KbButton>>()
@@ -615,7 +648,8 @@ private class Parser(
                 i += size; k++
             }
         }
-        return Keyboard(inline, rows)
+        val cols = if (!inline && rows.isNotEmpty()) rows.maxOf { it.size }.coerceIn(1, 4) else 2
+        return Keyboard(inline, rows, oneTime, placeholder, cols)
     }
 
     private fun extractNestedStr(e: PyExpr?, f: PySource.PyFunc?, kwKey: String): String? = when (e) {
@@ -633,6 +667,8 @@ private class Parser(
             webAppUrl = extractNestedStr(c.kwargs["web_app"], f, "url"),
             copyText = extractNestedStr(c.kwargs["copy_text"], f, "text"),
             switchInline = strOf(c.kwargs["switch_inline_query_current_chat"], f),
+            requestContact = boolConst(c.kwargs["request_contact"]),
+            requestLocation = boolConst(c.kwargs["request_location"]),
         )
     }
 
@@ -671,6 +707,8 @@ private class Parser(
                     webAppUrl = extractNestedStr(cKw(e, "web_app"), f, "url"),
                     copyText = extractNestedStr(cKw(e, "copy_text"), f, "text"),
                     switchInline = strOf(e.kwargs["switch_inline_query_current_chat"], f),
+                    requestContact = boolConst(e.kwargs["request_contact"]),
+                    requestLocation = boolConst(e.kwargs["request_location"]),
                 )
             }
             else -> null
@@ -1163,6 +1201,8 @@ private class Parser(
                 }
             }
             val tv = resolveText(textE, f)
+            val rmKb = (markupE as? PyExpr.Call)?.shortFn == "ReplyKeyboardRemove" ||
+                (markupE?.let { src.maskedOf(it).contains("ReplyKeyboardRemove") } == true)
             val kind = when (tv.kind) {
                 "unknown" -> if (evs.any { it is Ev.Llm }) "llm" else "text"
                 "none" -> "none"
@@ -1184,6 +1224,7 @@ private class Parser(
                 silent = silent,
                 protectContent = protect,
                 replyTo = replyTo,
+                removeKeyboard = rmKb,
             )
         }
         evs.firstOrNull { it is Ev.Script }?.let { return Action(kind = "script", script = (it as Ev.Script).code, toast = toast) }
@@ -1299,6 +1340,7 @@ private class Parser(
             pollOptions = a.pollOptions,
             pollAnonymous = a.pollAnonymous,
             pollMultiple = a.pollMultiple,
+            removeKeyboard = a.removeKeyboard,
         )
         return ScriptImporter.ImportedRule(
             type = "command",

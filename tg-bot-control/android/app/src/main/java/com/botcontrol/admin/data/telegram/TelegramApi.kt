@@ -1,6 +1,7 @@
 package com.botcontrol.admin.data.telegram
 
 import com.botcontrol.admin.data.InlineBtn
+import com.botcontrol.admin.data.KeyboardOptions
 import com.botcontrol.admin.data.MenuCommand
 import com.botcontrol.admin.data.layoutRows
 import com.google.gson.Gson
@@ -365,6 +366,8 @@ class TelegramApi(private val token: String) {
         protectContent: Boolean = false,
         replyToMessageId: Int? = null,
         messageThreadId: Int? = null,
+        keyboardOptions: KeyboardOptions = KeyboardOptions(),
+        removeKeyboard: Boolean = false,
     ): Result<Unit> = withShortRateLimitRetry {
         suspend fun attempt(pm: String?): Result<Unit> {
             val bucket = "chat:$chatId"
@@ -378,10 +381,28 @@ class TelegramApi(private val token: String) {
                 val payloadMap = mutableMapOf<String, Any>(
                     "chat_id" to chatId, "text" to text.take(4000))
                 applyMessageOpts(payloadMap, pm, disablePreview, silent, protectContent, replyToMessageId, messageThreadId)
-                if (keyboard.isNotEmpty()) {
-                    val rows = keyboard.chunked(2).map { row -> row.toList() }
-                    payloadMap["reply_markup"] = Gson().toJson(
-                        mapOf("keyboard" to rows, "resize_keyboard" to true))
+                if (removeKeyboard && inlineMenu.isEmpty()) {
+                    payloadMap["reply_markup"] = Gson().toJson(mapOf("remove_keyboard" to true))
+                } else if (keyboard.isNotEmpty() || keyboardOptions.contactButton.isNotBlank() || keyboardOptions.locationButton.isNotBlank()) {
+                    val cols = keyboardOptions.columns.coerceIn(1, 4)
+                    val rows = keyboard.map { mapOf<String, Any>("text" to it) }
+                        .chunked(cols)
+                        .toMutableList()
+                    val specialRow = buildList {
+                        if (keyboardOptions.contactButton.isNotBlank()) {
+                            add(mapOf("text" to keyboardOptions.contactButton, "request_contact" to true))
+                        }
+                        if (keyboardOptions.locationButton.isNotBlank()) {
+                            add(mapOf("text" to keyboardOptions.locationButton, "request_location" to true))
+                        }
+                    }
+                    if (specialRow.isNotEmpty()) rows.add(specialRow)
+                    val kbMap = mutableMapOf<String, Any>("keyboard" to rows, "resize_keyboard" to true)
+                    if (keyboardOptions.oneTime) kbMap["one_time_keyboard"] = true
+                    if (keyboardOptions.placeholder.isNotBlank()) {
+                        kbMap["input_field_placeholder"] = keyboardOptions.placeholder.take(64)
+                    }
+                    payloadMap["reply_markup"] = Gson().toJson(kbMap)
                 }
                 if (inlineMenu.isNotEmpty()) {
                     payloadMap["reply_markup"] = Gson().toJson(

@@ -368,11 +368,24 @@ object SettingsExporter {
 
         // ---------- клавиатура чата ----------
         val keyboard = store.keyboard(botId)
-        if (keyboard.isNotEmpty()) {
+        val kbOpts = store.keyboardOptions(botId)
+        if (keyboard.isNotEmpty() || kbOpts.contactButton.isNotBlank() || kbOpts.locationButton.isNotBlank()) {
             sb.appendLine("def chat_keyboard():")
-            sb.appendLine("    markup = ReplyKeyboardMarkup(resize_keyboard=True)")
-            keyboard.chunked(2).forEach { row ->
+            val ctorArgs = buildList {
+                add("resize_keyboard=True")
+                if (kbOpts.oneTime) add("one_time_keyboard=True")
+                if (kbOpts.placeholder.isNotBlank()) add("input_field_placeholder=${py(kbOpts.placeholder)}")
+            }.joinToString(", ")
+            sb.appendLine("    markup = ReplyKeyboardMarkup($ctorArgs)")
+            keyboard.chunked(kbOpts.columns.coerceIn(1, 4)).forEach { row ->
                 sb.appendLine("    markup.row(" + row.joinToString(", ") { "KeyboardButton(${py(it)})" } + ")")
+            }
+            val specials = buildList {
+                if (kbOpts.contactButton.isNotBlank()) add("KeyboardButton(${py(kbOpts.contactButton)}, request_contact=True)")
+                if (kbOpts.locationButton.isNotBlank()) add("KeyboardButton(${py(kbOpts.locationButton)}, request_location=True)")
+            }
+            if (specials.isNotEmpty()) {
+                sb.appendLine("    markup.row(" + specials.joinToString(", ") + ")")
             }
             sb.appendLine("    return markup")
             sb.appendLine()
@@ -604,7 +617,11 @@ object SettingsExporter {
         val menuName = ctx.menus.firstOrNull { (_, m) ->
             m.isNotEmpty() && m.map { it.id }.toSet() == BotJson.menu(rule.menu).map { it.id }.toSet()
         }?.first
-        val kbArg = if (menuName != null) ", reply_markup=$menuName()" else ""
+        val kbArg = when {
+            menuName != null -> ", reply_markup=$menuName()"
+            opts.removeKeyboard -> ", reply_markup=ReplyKeyboardRemove()"
+            else -> ""
+        }
         when (rule.actionType) {
             "pack" -> sb.appendLine("    bot.send_message(msg.chat.id, ${packExpr(rule.packId, ctx)}$extra$kbArg)")
             "anim" -> {

@@ -1,3 +1,28 @@
+# BotControl v1.8.0 (code 39)
+
+## 🚀 Ядро Telegram Bot API: форматирование, медиа, опросы, подменю и умные триггеры
+
+Первый крупный этап дорожной карты `ДОРОЖНАЯ-КАРТА-TELEGRAM.md` (Room `version = 6`, `MIGRATION_5_6`):
+
+- **Форматирование и опции доставки (`RuleOptions` + `TelegramApi`):**
+  - Поддержка `parse_mode` (`HTML` / `MarkdownV2`) для правил, кнопок и расписания с автоматическим откатом на обычный текст при ошибке разметки HTTP 400 (`can't parse entities`).
+  - Флаги доставки: «Без превью ссылок» (`link_preview_options`), «Тихое уведомление» (`disable_notification`), «Запретить пересылку/копирование» (`protect_content`), «Ответ с цитатой» (`reply_parameters`), тема форума (`message_thread_id`) и скрытие нижней клавиатуры (`ReplyKeyboardRemove`).
+- **Вложенные inline-меню (`I-4`) и новые типы кнопок:**
+  - Многоуровневые inline-подменю (`submenu` до 3 уровней + автоматическая кнопка `⬅️ Назад` со стеком переходов по `(botId, chatId, messageId)` через `editMessageText` / `editMessageReplyMarkup`).
+  - Новые действия в `MenuEditor`: `web_app` (Telegram Mini App), `copy_text` (кнопка копирования), `switch_inline` (подстановка запроса в чат), `llm` (локальный ИИ по кнопке) и `media` — с полным импортом и обратным экспортом в Python (`ScriptImporter` ↔ `SettingsExporter`).
+- **Медиа-ответы, опросы и расширенный `TelegramApi` (`U-4`):**
+  - Входящий `TgMessage` читает `username`, `userId`, `chatType`, `messageId`, `messageThreadId`, `caption`, `fileId`, `replyToText`, `location` и `contact`.
+  - Исходящие методы Bot API: `sendSticker`, `sendAnimation`, `sendDocument`, `sendVideo`, `sendVoice`, `sendAudio`, `sendPoll`, `sendMediaGroup`, `sendLocation`, `copyMessage`, `forwardMessage`, `setMessageReaction`, `pinChatMessage`, `editMessageReplyMarkup`, `getChatMemberStatus`.
+  - Новые действия правил в `LocalBotScreen`: **«🖼 Медиа»** (по `file_id`, URL или файлу) и **«📊 Опрос»** (`sendPoll`).
+- **Меню команд и клавиатура чата:**
+  - `setMyCommandsScoped`: поддержка `scope` (`default`, `all_private_chats`, `all_group_chats`, `all_chat_administrators`) и `language_code` в `BotSettingsScreen` и при импорте/экспорте.
+  - Настройка раскладки Reply-клавиатуры (`KeyboardOptions` в `ButtonsScreen`): количество колонок (`1..4`), `one_time_keyboard`, `input_field_placeholder`, спец-кнопки запроса телефона (`request_contact`) и геолокации (`request_location`).
+- **Умные триггеры, плейсхолдеры и планировщик (`U-2`, `U-3`, `U-6`):**
+  - Триггер `regex` (с живой проверкой синтаксиса) и опция пословного совпадения `wholeWord` (`\p{L}\p{N}_`).
+  - Расширенные плейсхолдеры `{user}`, `{username}`, `{user_id}`, `{chat_id}`, `{args}`, `{arg1..3}`, `{bot}`, `{date}`, `{time}` и новые поля JS-скриптов `handle(e)` (`e.username`, `e.userId`, `e.chatType`, `e.args`, `e.messageId`, `e.replyToText`, `e.kind`, `e.fileId`).
+  - `ShuffleBag` (`U-2`: перебор набора без повторов до исчерпания) в `PackEditScreen` и `ScheduleJitter` (`U-3`: случайный разброс `±N` мин) + `threadId` / `parseMode` в `RemindersScreen`.
+  - Встроенная памятка поддерживаемых конструкций импорта (`U-6`) в `ImportScreen` и обновлённые промты/гайды (`PromptScreen`, `ГАЙД-СОЗДАНИЕ-БОТА-LLM.md`, `Промт-создание-ботов.md`, `Инструкция-код-бота.md`).
+
 # BotControl v1.7.5 (code 38)
 
 ## 🧩 Исправления импорта, расписания, диагностики и документации для LLM-ботов
