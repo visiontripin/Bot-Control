@@ -15,15 +15,18 @@ tg-bot-control/
 │       ├── service/         # LocalBotService, BotBrain, AnimPlayer, ListingEngine, FileServer
 │       ├── llm/             # MediaPipe / LiteRT движки, ModelStore
 │       └── ui/              # экраны, компоненты, тема (палитра Telegram)
-├── desktop-web/             # локальный веб-редактор и сборка для Windows (BotControl.exe) и Termux
+├── desktop-web/             # локальный веб-редактор и сборка для Windows (BotControl.exe 0.7.0) и Termux
 ├── scripts/                 # build_apk.sh, build_in_sandbox.sh
 ├── branding/                # logo.svg, avatar-640.png, slides/, генераторы ассетов
-├── tools/                   # kotlin-harness, import-fixtures, check-bot-isolation.py, check-no-tokens.py
+├── tools/                   # kotlin-harness, shared-telegram-mock, import-fixtures, verify-release.sh, CI-проверки
+├── showcase-all-ready.py    # полный демо-бот всех функций v2.2.0 / 0.7.0
+├── presentation-bot-ready.py# бот-презентация @AppBotcontrol_bot (3-уровневые меню, Этапы 1–5)
 ├── smith-bot-ready.py       # «Агент Смит / перекур»: ИИ-характер, шутки, анимация, расписание
 ├── daromvpl-channel-ready.py# канал «Даром в ПЛ»: команды, правила, дайджесты, реакции
-├── presentation-bot-ready.py# бот-презентация @AppBotcontrol_bot
+├── ДОРОЖНАЯ-КАРТА-TELEGRAM.md # 5-этапная дорожная карта (выполнена в v1.8.0–v2.2.0)
 ├── Инструкция-код-бота.md   # как писать конфиги и импортировать их
 ├── Промт-создание-ботов.md  # промт для генерации конфигов
+├── ГАЙД-СОЗДАНИЕ-БОТА-LLM.md# полный гайд и 2-фазный мастер-промт для LLM
 └── ПЕРЕДАЧА-КОНТЕКСТА.md    # состояние проекта, грамматика импорта, ловушки
 ```
 
@@ -52,6 +55,7 @@ APK собирается в GitHub Actions (`.github/workflows/botcontrol-apk.ym
 ## Тесты и проверки
 
 ```bash
+bash tools/verify-release.sh             # единая 5-гейтовая проверка релиза (Android + desktop-web + mock)
 python3 tools/check-no-tokens.py         # секреты и токены не попали в git (шаг CI)
 python3 tools/check-bot-isolation.py     # сервис не читает настройки без botId (шаг CI)
 cd desktop-web && python3 -m unittest test_server -v && node test-generated.js
